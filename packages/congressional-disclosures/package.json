@@ -1,7 +1,7 @@
 {
   "name": "congressional-disclosures",
-  "version": "0.1.0",
-  "description": "U.S. congressional trading disclosures: a resumable sharded backfill runtime plus integrity checks over the published filing, trade, and event tables.",
+  "version": "0.2.0",
+  "description": "U.S. congressional trading disclosures: a resumable sharded backfill runtime, schema-bound PTR extraction (PDF text layer, OCR row windows, consensus reads), and integrity checks over the published filing, trade, and event tables.",
   "license": "MIT",
   "author": "Austin Starks",
   "repository": {
@@ -10,7 +10,7 @@
     "directory": "packages/congressional-disclosures"
   },
   "homepage": "https://github.com/austin-starks/congressional-disclosures#readme",
-  "keywords": ["congress", "disclosure", "ptr", "house", "senate", "backfill", "sharding", "idempotent", "s3", "etl", "resumable", "data-quality"],
+  "keywords": ["congress", "disclosure", "ptr", "house", "senate", "backfill", "sharding", "idempotent", "s3", "etl", "resumable", "data-quality", "extraction", "ocr"],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": ["dist", "README.md"],
@@ -21,7 +21,8 @@
     "access": "public"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.716.0"
+    "@aws-sdk/client-s3": "^3.716.0",
+    "pdf-lib": "^1.17.1"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

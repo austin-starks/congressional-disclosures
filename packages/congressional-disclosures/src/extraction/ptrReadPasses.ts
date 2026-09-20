@@ -1,0 +1,429 @@
+import {
+  gapFillSourceId,
+  planGapFillAttachment,
+  planReconcileAttachment,
+  planSourceReadRequests,
+  sourceReadId,
+  windowRowPages,
+  type OcrTextBudget,
+} from "./ocrTextPlan";
+import {
+  decidePtrConsensus,
+  failedPtrResult,
+  firstCitedRow,
+  idsNeedingThirdRead,
+  MAX_EXTRACTION_READS,
+  pageReadsAgree,
+  type PtrConsensusDecision,
+} from "./ptrConsensus";
+import type { PtrBatchResult, PtrDocumentResult, PtrPriorRead, PtrRowWindow } from "./ptrExtraction";
+import { gapFillRanges, mergeGapFills } from "./ptrGapFill";
+import type { PlannedPtrAttachment, PtrAttachmentMeta } from "./ptrRequestPlan";
+
+/**
+ * The read passes of a PTR extraction, shared by the Phase 0 gate and the daily
+ * job so production runs exactly what the gate measured. The caller supplies how
+ * one set of requests is sent (`RunReadRequests`); this module decides what is
+ * read and how reads combine:
+ *
+ * 1. Every planned attachment is read. A row window read whose only defect is rows
+ *    without a disposition gets a gap read of those rows (`ptrGapFill.ts`).
+ * 2. With two reads, the same requests are read again in reverse order, so each
+ *    attachment sits at a different prompt position, and every attachment whose
+ *    two reads disagree is read a third time on its own.
+ * 3. `ptrConsensus.ts` decides each attachment. One still undecided is read again on
+ *    its own, up to `MAX_EXTRACTION_READS` reads, and one that no two reads agree on
+ *    after that fails, so a later run retries it.
+ *
+ * Scans read from OCR text take map-reduce reads instead (`runMapReduceReads`): a read
+ * of the OCR text, a read of the filed pages without it, and a reconciling read where
+ * those two disagree.
+ */
+export interface ReadOutcome {
+  attachments: PtrAttachmentMeta[];
+  result: PtrBatchResult | null;
+  /** The read stopped at the model's output token limit, so this request cannot be read whole. */
+  truncated?: boolean;
+}
+
+export interface ReadPass {
+  /** 1 for the first read, 2 for the second, 3 for third reads. */
+  pass: number;
+  /** True for that pass's gap reads. */
+  gap: boolean;
+}
+
+export type RunReadRequests = (
+  requests: PlannedPtrAttachment[][],
+  read: ReadPass
+) => Promise<ReadOutcome[]>;
+
+export interface ConsensusCounts {
+  agreed: number;
+  arbitrated: number;
+  failed: number;
+  /** Reads after the first two: third reads and further reads of undecided attachments. */
+  laterReads: number;
+  gapReads: number;
+  promptTokens: number;
+  completionTokens: number;
+}
+
+export interface ExtractionReads {
+  /** The first read's requests, carrying each attachment's decided result. */
+  outcomes: ReadOutcome[];
+  consensus: ConsensusCounts | null;
+}
+
+export const GAP_READS_PER_REQUEST = 5;
+
+export function readsOf(outcomes: readonly ReadOutcome[]): Map<string, PtrDocumentResult> {
+  return new Map(
+    outcomes.flatMap((outcome) =>
+      (outcome.result?.documents ?? []).map(
+        (document): [string, PtrDocumentResult] => [document.sourceId, document]
+      )
+    )
+  );
+}
+
+/** Gap read attachments for every window read whose only defect is rows without a disposition. */
+export function planGapFills(
+  requests: readonly PlannedPtrAttachment[][],
+  outcomes: readonly ReadOutcome[]
+): PlannedPtrAttachment[] {
+  const planned = new Map(requests.flat().map((attachment) => [attachment.sourceId, attachment]));
+  return outcomes.flatMap((outcome) =>
+    (outcome.result?.documents ?? []).flatMap((document) => {
+      const attachment = planned.get(document.sourceId);
+      if (!attachment?.rowWindow || !attachment.numberedOcr) return [];
+      return gapFillRanges(attachment.rowWindow, document).map((range) =>
+        planGapFillAttachment(attachment, range)
+      );
+    })
+  );
+}
+
+function rowWindowsOf(outcomes: readonly ReadOutcome[]): Map<string, PtrRowWindow> {
+  return new Map(
+    outcomes.flatMap((outcome) =>
+      outcome.attachments.flatMap((attachment): Array<[string, PtrRowWindow]> =>
+        attachment.rowWindow ? [[attachment.sourceId, attachment.rowWindow]] : []
+      )
+    )
+  );
+}
+
+/** Merge gap reads back into the window reads they came from; each merged read is proved again. */
+export function applyGapFills(
+  outcomes: readonly ReadOutcome[],
+  gapOutcomes: readonly ReadOutcome[]
+): ReadOutcome[] {
+  const windows = rowWindowsOf(outcomes);
+  const gapReads = readsOf(gapOutcomes);
+  return outcomes.map((outcome): ReadOutcome => {
+    if (!outcome.result) return outcome;
+    return {
+      attachments: outcome.attachments,
+      result: {
+        ...outcome.result,
+        documents: outcome.result.documents.map((document) => {
+          const window = windows.get(document.sourceId);
+          const ranges = window ? gapFillRanges(window, document) : [];
+          if (!window || ranges.length === 0) return document;
+          return mergeGapFills(
+            window,
+            document,
+            ranges.map((range) => ({
+              window: range,
+              result: gapReads.get(gapFillSourceId(document.sourceId, range)),
+            }))
+          );
+        }),
+      },
+    };
+  });
+}
+
+/** One pass: read every request, then gap-read what the proof found without a disposition. */
+export async function runReadPass(
+  requests: PlannedPtrAttachment[][],
+  pass: number,
+  run: RunReadRequests
+): Promise<{ outcomes: ReadOutcome[]; gapOutcomes: ReadOutcome[] }> {
+  const outcomes = await run(requests, { pass, gap: false });
+  const gapAttachments = planGapFills(requests, outcomes);
+  if (gapAttachments.length === 0) return { outcomes, gapOutcomes: [] };
+  const gapRequests = Array.from(
+    { length: Math.ceil(gapAttachments.length / GAP_READS_PER_REQUEST) },
+    (_, index) => gapAttachments.slice(index * GAP_READS_PER_REQUEST, (index + 1) * GAP_READS_PER_REQUEST)
+  );
+  const gapOutcomes = await run(gapRequests, { pass, gap: true });
+  return { outcomes: applyGapFills(outcomes, gapOutcomes), gapOutcomes };
+}
+
+/**
+ * Decide every first-read attachment from all of its reads (`reads[0]` is the first
+ * read) and put the decided documents back into the first read's requests, so later
+ * steps merge them as they would a single read. `gapOutcomes` count toward reads and
+ * tokens only.
+ */
+export function applyConsensus(
+  reads: ReadonlyArray<readonly ReadOutcome[]>,
+  gapOutcomes: readonly ReadOutcome[] = []
+): ExtractionReads & { consensus: ConsensusCounts } {
+  const [first = []] = reads;
+  const ids = first.flatMap((outcome) => outcome.attachments.map((attachment) => attachment.sourceId));
+  return decidedReads(
+    first,
+    decidePtrConsensus(ids, reads.map(readsOf), rowWindowsOf(first)),
+    reads.flat(),
+    reads.slice(2).flat().reduce((total, outcome) => total + outcome.attachments.length, 0),
+    gapOutcomes
+  );
+}
+
+/** Decided documents put back into the first read's requests, with the counts and tokens of every read. */
+function decidedReads(
+  first: readonly ReadOutcome[],
+  decisions: readonly PtrConsensusDecision[],
+  allOutcomes: readonly ReadOutcome[],
+  laterReads: number,
+  gapOutcomes: readonly ReadOutcome[]
+): ExtractionReads & { consensus: ConsensusCounts } {
+  const decided = new Map(decisions.map((decision) => [decision.id, decision.result]));
+  const count = (outcome: PtrConsensusDecision["outcome"]): number =>
+    decisions.filter((decision) => decision.outcome === outcome).length;
+  const results = [...allOutcomes, ...gapOutcomes].flatMap((outcome) =>
+    outcome.result ? [outcome.result] : []
+  );
+  const template = results[0] ?? null;
+  return {
+    outcomes: first.map((outcome): ReadOutcome => {
+      const base = outcome.result ?? template;
+      return {
+        attachments: outcome.attachments,
+        result: base
+          ? {
+              ...base,
+              documents: outcome.attachments.map(
+                (attachment) => decided.get(attachment.sourceId) as PtrDocumentResult
+              ),
+            }
+          : null,
+      };
+    }),
+    consensus: {
+      agreed: count("agreed"),
+      arbitrated: count("arbitrated"),
+      failed: count("failed"),
+      laterReads,
+      gapReads: gapOutcomes.reduce((total, outcome) => total + outcome.attachments.length, 0),
+      promptTokens: results.reduce((sum, result) => sum + result.usage.promptTokens, 0),
+      completionTokens: results.reduce((sum, result) => sum + result.usage.completionTokens, 0),
+    },
+  };
+}
+
+/** Every read pass for a set of planned requests: one read, or two with third reads and consensus. */
+export async function runExtractionReads(
+  requests: PlannedPtrAttachment[][],
+  reads: 1 | 2,
+  run: RunReadRequests
+): Promise<ExtractionReads> {
+  const first = await runReadPass(requests, 1, run);
+  if (reads === 1) return { outcomes: first.outcomes, consensus: null };
+  const second = await runReadPass(
+    [...requests].reverse().map((request) => [...request].reverse()),
+    2,
+    run
+  );
+  const attachments = requests.flat();
+  const passes: ReadOutcome[][] = [first.outcomes, second.outcomes];
+  const gapOutcomes = [...first.gapOutcomes, ...second.gapOutcomes];
+  const windows = rowWindowsOf(first.outcomes);
+  let pending = new Set(
+    idsNeedingThirdRead(
+      attachments.map((attachment) => attachment.sourceId),
+      readsOf(first.outcomes),
+      readsOf(second.outcomes)
+    )
+  );
+  for (let pass = 3; pass <= MAX_EXTRACTION_READS && pending.size > 0; pass += 1) {
+    const next = await runReadPass(
+      attachments.filter((attachment) => pending.has(attachment.sourceId)).map((attachment) => [attachment]),
+      pass,
+      run
+    );
+    passes.push(next.outcomes);
+    gapOutcomes.push(...next.gapOutcomes);
+    pending = new Set(
+      decidePtrConsensus([...pending], passes.map(readsOf), windows)
+        .filter((decision) => decision.outcome === "failed")
+        .map((decision) => decision.id)
+    );
+  }
+  return applyConsensus(passes, gapOutcomes);
+}
+
+export const MAP_READ_LABELS = {
+  text: "Read A (OCR text alone)",
+  source: "Read B (the filed pages alone)",
+} as const;
+
+/** Counts of several read runs added together; null when none ran. */
+export function sumConsensus(counts: ReadonlyArray<ConsensusCounts | null>): ConsensusCounts | null {
+  const present = counts.filter((count): count is ConsensusCounts => count !== null);
+  if (present.length === 0) return null;
+  return present.reduce((total, count) => ({
+    agreed: total.agreed + count.agreed,
+    arbitrated: total.arbitrated + count.arbitrated,
+    failed: total.failed + count.failed,
+    laterReads: total.laterReads + count.laterReads,
+    gapReads: total.gapReads + count.gapReads,
+    promptTokens: total.promptTokens + count.promptTokens,
+    completionTokens: total.completionTokens + count.completionTokens,
+  }));
+}
+
+function pageKey(filingId: string, page: number): string {
+  return `${filingId}#${page}`;
+}
+
+/**
+ * Pages where the map reads disagree, as `pageKey`s: the transactions Read A starts on a page, across every window,
+ * against those Read B lists for it. A page is disputed as well when a read of it failed or gave no answer, or when a
+ * Read A transaction cites no row.
+ */
+function disputedPages(
+  windows: readonly PlannedPtrAttachment[],
+  textReads: ReadonlyMap<string, PtrDocumentResult>,
+  sourceReads: ReadonlyMap<string, PtrDocumentResult>
+): Set<string> {
+  const disputed = new Set<string>();
+  const textRows = new Map<string, Array<Record<string, unknown>>>();
+  for (const window of windows) {
+    const read = textReads.get(window.sourceId);
+    const located: Array<[string, Record<string, unknown>]> = [];
+    let unplaced = !read || read.error !== null;
+    for (const row of read && !read.error ? read.rows : []) {
+      const page = window.numberedOcr?.rowPages[firstCitedRow(row) - 1];
+      if (page === undefined) unplaced = true;
+      else located.push([pageKey(window.filingId, page), row]);
+    }
+    if (unplaced) {
+      for (const page of windowRowPages(window)) disputed.add(pageKey(window.filingId, page));
+      continue;
+    }
+    for (const [key, row] of located) textRows.set(key, [...(textRows.get(key) ?? []), row]);
+  }
+  for (const window of windows) {
+    for (const page of windowRowPages(window)) {
+      const key = pageKey(window.filingId, page);
+      const source = sourceReads.get(sourceReadId(window.filingId, page));
+      if (!source || source.error || !pageReadsAgree(textRows.get(key) ?? [], source.rows)) disputed.add(key);
+    }
+  }
+  return disputed;
+}
+
+/** Read B as a window's reconciling read sees it: every transaction listed on the pages its rows sit on, by page. */
+function sourceReadOfWindow(
+  window: PlannedPtrAttachment,
+  sourceReads: ReadonlyMap<string, PtrDocumentResult>
+): PtrDocumentResult {
+  const pages = windowRowPages(window).map((page) => ({
+    page,
+    read: sourceReads.get(sourceReadId(window.filingId, page)),
+  }));
+  const failures = pages.flatMap(({ page, read }) =>
+    !read ? [`page ${page}: no answer`] : read.error ? [`page ${page}: ${read.error}`] : []
+  );
+  return {
+    sourceId: window.sourceId,
+    rows: pages.flatMap(({ page, read }) =>
+      (read?.rows ?? []).map((row) => ({
+        page,
+        ...Object.fromEntries(Object.entries(row).filter(([field]) => field !== "ocr_rows")),
+      }))
+    ),
+    noTransactionsStatement: null,
+    amendedReportDate: null,
+    amendedReportDateIso: null,
+    nonTransactionRows: [],
+    continuationRows: [],
+    invalidRowIndexes: [],
+    reviewRowIndexes: [],
+    error: failures.length > 0 ? failures.join("; ") : null,
+  };
+}
+
+/**
+ * Map-reduce reads of OCR text windows. Read A takes the OCR text and Read B the filed page
+ * alone, so their errors are unrelated and show as page-level disagreement. A window whose
+ * pages all agree is accepted; any other gets one reconciling read with both reads and the
+ * filed pages, which must still pass row coverage or the window fails for a later retry.
+ */
+export async function runMapReduceReads(
+  requests: PlannedPtrAttachment[][],
+  run: RunReadRequests,
+  budget: OcrTextBudget
+): Promise<ExtractionReads & { consensus: ConsensusCounts }> {
+  const sourcePlan = planSourceReadRequests(requests, budget);
+  const [textRead, sourceOutcomes] = await Promise.all([
+    runReadPass(requests, 1, run),
+    sourcePlan.then(({ requests: sourceRequests }) =>
+      sourceRequests.length > 0 ? run(sourceRequests, { pass: 2, gap: false }) : []
+    ),
+  ]);
+  const { unreadable } = await sourcePlan;
+  const windows = requests.flat();
+  const textReads = readsOf(textRead.outcomes);
+  const sourceReads = readsOf(sourceOutcomes);
+  const disputed = disputedPages(windows, textReads, sourceReads);
+  const reconciling = windows.filter((window) =>
+    windowRowPages(window).some((page) => disputed.has(pageKey(window.filingId, page)))
+  );
+  const planningErrors = new Map<string, string>();
+  const reconcileAttachments = (
+    await Promise.all(
+      reconciling.map((window) => {
+        const text = textReads.get(window.sourceId);
+        const priorReads: PtrPriorRead[] = [
+          ...(text ? [{ label: MAP_READ_LABELS.text, result: text }] : []),
+          { label: MAP_READ_LABELS.source, result: sourceReadOfWindow(window, sourceReads) },
+        ];
+        return planReconcileAttachment(window, priorReads).catch((error: unknown) => {
+          const reason = error instanceof Error ? error.message : String(error);
+          planningErrors.set(window.sourceId, unreadable.get(window.filingId) ?? reason);
+          return null;
+        });
+      })
+    )
+  ).flatMap((attachment) => (attachment ? [attachment] : []));
+  const reconcileOutcomes =
+    reconcileAttachments.length === 0
+      ? []
+      : await run(
+          reconcileAttachments.map((attachment) => [attachment]),
+          { pass: 3, gap: false }
+        );
+  const reconciled = readsOf(reconcileOutcomes);
+  const reconcilingIds = new Set(reconciling.map((window) => window.sourceId));
+  const decisions = windows.map((window): PtrConsensusDecision => {
+    const id = window.sourceId;
+    const text = textReads.get(id);
+    if (text && !reconcilingIds.has(id)) return { id, outcome: "agreed", result: text };
+    const result = reconciled.get(id);
+    if (result && !result.error) return { id, outcome: "arbitrated", result };
+    const reason = planningErrors.get(id) ?? result?.error ?? "the reconciling read returned no answer";
+    return { id, outcome: "failed", result: failedPtrResult(id, `map reads disagreed and reconciling failed: ${reason}`) };
+  });
+  return decidedReads(
+    textRead.outcomes,
+    decisions,
+    [...textRead.outcomes, ...sourceOutcomes, ...reconcileOutcomes],
+    reconcileOutcomes.reduce((total, outcome) => total + outcome.attachments.length, 0),
+    textRead.gapOutcomes
+  );
+}
