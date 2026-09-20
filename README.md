@@ -45,12 +45,13 @@ Or add the library to an application:
 npm install congressional-disclosures
 ```
 
-Until a release is available from npm, the repository root exposes the same
-CLI and library entry points:
+The published package is the supported installation path. The GitHub repository
+contains the same TypeScript source, release tests, and live-source canaries.
 
-```bash
-npm install github:austin-starks/congressional-disclosures
-```
+If you want the current audited lake without running extraction yourself, use the
+[Congressional Stock Trades dataset](https://huggingface.co/datasets/austin-starks/congressional-stock-trades).
+Its Parquet snapshot mirrors the same filings, trades, and reconciled event model;
+read the dataset's statutory-use notice before using the records.
 
 ## Requirements
 

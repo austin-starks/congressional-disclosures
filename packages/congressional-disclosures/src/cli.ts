@@ -3,6 +3,7 @@
 import { resolve } from "node:path";
 
 import { LocalCache } from "./runtime/cache";
+import { isHelpRequest } from "./cliArgs";
 import { commandAvailable } from "./runtime/poppler";
 import { MistralOcrClient } from "./providers/mistralOcr";
 import { OpenAiCompatibleCompletionClient } from "./providers/openaiCompatible";
@@ -82,8 +83,13 @@ async function doctor(): Promise<number> {
 }
 
 async function main(): Promise<number> {
-  const { command, flags } = parseArgs(process.argv.slice(2));
-  if (command === "help" || flags.has("help")) { help(); return 0; }
+  const args = process.argv.slice(2);
+  if (isHelpRequest(args)) {
+    help();
+    return 0;
+  }
+  const { command, flags } = parseArgs(args);
+  if (flags.has("help")) { help(); return 0; }
   if (command === "doctor") return doctor();
 
   const dbPath = resolve(textFlag(flags, "db", "./congressional-disclosures.sqlite") ?? "./congressional-disclosures.sqlite");

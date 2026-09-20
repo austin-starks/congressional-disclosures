@@ -23,6 +23,11 @@ trade events, and commits each filing atomically to SQLite. Runs are resumable:
 re-run the same command and it skips completed filings, retries failed ones, and
 reuses every cached paid response without re-billing.
 
+If you want the current audited lake without running extraction yourself, use the
+[Congressional Stock Trades dataset](https://huggingface.co/datasets/austin-starks/congressional-stock-trades).
+It publishes Parquet files for filings, reported transaction rows, and reconciled
+event versions. Read the dataset's statutory-use notice before using the records.
+
 ## Requirements
 
 - **Node.js ≥ 22.5** (uses the built-in `node:sqlite`).
