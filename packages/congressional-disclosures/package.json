@@ -1,6 +1,6 @@
 {
   "name": "congressional-disclosures",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Build a queryable SQLite lake of U.S. congressional trading disclosures (House PTRs and Senate eFD filings) from official sources: discovery, PDF decrypt/render, OCR, consensus model extraction, resumable sync, and integrity audits.",
   "license": "MIT",
   "author": "Austin Starks",
@@ -91,7 +91,7 @@
     "cheerio": "^1.2.0",
     "jszip": "^3.10.2",
     "pdf-lib": "^1.17.1",
-    "sharp": "^0.33.5"
+    "sharp": "^0.35.4"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

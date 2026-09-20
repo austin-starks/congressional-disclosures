@@ -2,12 +2,19 @@ import { load } from "cheerio";
 import sharp from "sharp";
 
 import { parseSlashDate } from "../lake/dates";
-import { fetchBuffer, fetchWithRetry } from "./http";
+import { fetchWithRetry, readResponseBuffer } from "./http";
 
 const EFD_ORIGIN = "https://efdsearch.senate.gov";
 const HOME_PATH = "/search/home/";
 const SEARCH_PATH = "/search/";
 const REPORT_DATA_PATH = "/search/report/data/";
+const SENATE_MEDIA_ORIGINS = new Set([
+  EFD_ORIGIN,
+  "https://efd-media-public.senate.gov",
+]);
+const SENATE_MEDIA_REDIRECTS = new Set([301, 302, 303, 307, 308]);
+const SENATE_MEDIA_MAX_REDIRECTS = 5;
+export const SENATE_MEDIA_MAX_BYTES = 64 * 1024 * 1024;
 export const SENATE_PTR_REPORT_TYPE = 11;
 
 export interface SenateSearchRow {
@@ -70,9 +77,25 @@ export function parseSenateReportTitle(title: string): SenateReportTitle | null 
   return { reportDate, amendment: match[2] ? "numbered" : "unnumbered" };
 }
 
+export function senateMediaUrl(value: string, base: string = EFD_ORIGIN): string {
+  let url: URL;
+  try {
+    url = new URL(value, base);
+  } catch {
+    throw new Error(`Invalid Senate media URL: ${value}`);
+  }
+  if (!SENATE_MEDIA_ORIGINS.has(url.origin) || url.username || url.password) {
+    throw new Error(`Untrusted Senate media URL: ${url.href}`);
+  }
+  return url.href;
+}
+
 export function senatePaperPageImageUrls(html: string): string[] {
   const $ = load(html);
-  return $("img.filingImage").toArray().map((image) => $(image).attr("src")?.trim() ?? "").filter(Boolean);
+  return $("img.filingImage").toArray()
+    .map((image) => $(image).attr("src")?.trim() ?? "")
+    .filter(Boolean)
+    .map((url) => senateMediaUrl(url));
 }
 
 export function isTiffImage(bytes: Buffer): boolean {
@@ -211,5 +234,20 @@ export class SenateEfdSession {
 }
 
 export async function fetchSenateMedia(url: string): Promise<Buffer> {
-  return normalizeSenatePaperPageImage(await fetchBuffer(url));
+  let current = senateMediaUrl(url);
+  for (let redirect = 0; redirect <= SENATE_MEDIA_MAX_REDIRECTS; redirect += 1) {
+    const response = await fetchWithRetry(
+      current,
+      { redirect: "manual" },
+      { acceptedStatuses: [...SENATE_MEDIA_REDIRECTS] }
+    );
+    if (!SENATE_MEDIA_REDIRECTS.has(response.status)) {
+      return normalizeSenatePaperPageImage(await readResponseBuffer(response, SENATE_MEDIA_MAX_BYTES));
+    }
+    const location = response.headers.get("location");
+    await response.body?.cancel();
+    if (!location) throw new Error(`Senate media redirect from ${current} omitted Location`);
+    current = senateMediaUrl(location, current);
+  }
+  throw new Error(`Senate media exceeded ${SENATE_MEDIA_MAX_REDIRECTS} redirects`);
 }

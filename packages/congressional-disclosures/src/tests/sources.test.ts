@@ -7,6 +7,7 @@ import {
   parseHouseIndexZip,
 } from "../sources/house";
 import {
+  fetchSenateMedia,
   parseSenateElectronicPtr,
   parseSenateReportTitle,
   senatePaperPageImageUrls,
@@ -123,8 +124,46 @@ describe("Senate eFD sources", () => {
       <img src="/irrelevant.png" />
     </body></html>`;
     expect(senatePaperPageImageUrls(html)).toEqual([
-      "/search/view/paper/abc/1.png",
-      "/search/view/paper/abc/2.png",
+      "https://efdsearch.senate.gov/search/view/paper/abc/1.png",
+      "https://efdsearch.senate.gov/search/view/paper/abc/2.png",
     ]);
+  });
+
+  test("rejects paper-report page images outside official Senate origins", () => {
+    const html = '<img class="filingImage" src="http://169.254.169.254/latest/meta-data/" />';
+    expect(() => senatePaperPageImageUrls(html)).toThrow("Untrusted Senate media URL");
+  });
+
+  test("rejects a Senate-media redirect outside official origins", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn(async () => new Response(null, {
+      status: 302,
+      headers: { location: "http://127.0.0.1/internal" },
+    })) as typeof fetch;
+    try {
+      await expect(fetchSenateMedia("https://efd-media-public.senate.gov/media/page.gif"))
+        .rejects.toThrow("Untrusted Senate media URL");
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("follows a Senate-media redirect that stays on an official origin", async () => {
+    const originalFetch = globalThis.fetch;
+    const body = Buffer.from("GIF89a", "ascii");
+    globalThis.fetch = jest.fn()
+      .mockResolvedValueOnce(new Response(null, {
+        status: 302,
+        headers: { location: "https://efd-media-public.senate.gov/media/page.gif" },
+      }))
+      .mockResolvedValueOnce(new Response(body, { status: 200 })) as typeof fetch;
+    try {
+      await expect(fetchSenateMedia("https://efdsearch.senate.gov/media/page.gif"))
+        .resolves.toEqual(body);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

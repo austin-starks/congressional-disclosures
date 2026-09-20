@@ -1,4 +1,4 @@
-import { fetchWithRetry } from "../sources/http";
+import { fetchWithRetry, readResponseBuffer } from "../sources/http";
 
 describe("official-source HTTP client", () => {
   test("accepts an explicitly allowed redirect status", async () => {
@@ -29,5 +29,10 @@ describe("official-source HTTP client", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  test("stops reading a response after the configured byte limit", async () => {
+    const response = new Response("four", { headers: { "content-length": "4" } });
+    await expect(readResponseBuffer(response, 3)).rejects.toThrow("Response exceeded 3 bytes");
   });
 });

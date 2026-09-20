@@ -9,12 +9,27 @@ function safeExtension(name: string): string {
   return /^\.[a-z0-9]{1,8}$/.test(extension) ? extension : ".bin";
 }
 
+function cacheNamespace(value: string): string {
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(value)) {
+    throw new Error(`Invalid cache namespace: ${value}`);
+  }
+  return value;
+}
+
+function cacheExtension(value: string): string {
+  if (!/^\.[a-z0-9]{1,8}$/i.test(value)) {
+    throw new Error(`Invalid cache extension: ${value}`);
+  }
+  return value;
+}
+
 export class LocalCache {
   readonly root: string;
   constructor(root: string) { this.root = resolve(root); }
 
   path(namespace: string, key: string, extension = ".json"): string {
-    return join(this.root, namespace, `${key}${extension}`);
+    const filename = `${requestHash("local-cache-key-v1", key)}${cacheExtension(extension)}`;
+    return join(this.root, cacheNamespace(namespace), filename);
   }
 
   async readJson(key: string): Promise<Record<string, unknown> | null> {

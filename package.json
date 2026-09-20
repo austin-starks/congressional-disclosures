@@ -1,6 +1,6 @@
 {
   "name": "congressional-disclosures",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "Build a queryable SQLite lake of U.S. congressional trading disclosures from official House and Senate sources.",
   "license": "MIT",
@@ -87,7 +87,7 @@
     "cheerio": "^1.2.0",
     "jszip": "^3.10.2",
     "pdf-lib": "^1.17.1",
-    "sharp": "^0.33.5"
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",

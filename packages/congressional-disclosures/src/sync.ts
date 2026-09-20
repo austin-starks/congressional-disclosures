@@ -296,7 +296,7 @@ async function extractSenate(
   }
   if (!completion) return senateFilingWithoutTrades(source, "paper", "failed", "OPENROUTER_API_KEY is required for Senate paper filings");
   if (!ocr) return senateFilingWithoutTrades(source, "paper", "failed", "MISTRAL_API_KEY is required for Senate paper filings");
-  const imageUrls = senatePaperPageImageUrls(html).map((url) => new URL(url, "https://efdsearch.senate.gov").href);
+  const imageUrls = senatePaperPageImageUrls(html);
   if (imageUrls.length === 0) return senateFilingWithoutTrades(source, "paper", "failed", "paper report lists no page images");
   const images = await Promise.all(imageUrls.map((url) => senate.fetchMedia(url)));
   await Promise.all(images.map((image, index) => cache.archive(image, imageUrls[index] ?? sourceUrl, `${docId}-page-${index + 1}.png`)));
