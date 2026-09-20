@@ -4,9 +4,10 @@ Guidance for coding agents working in this repository. `CLAUDE.md` is a symlink 
 
 ## What this repository is
 
-One package, `packages/congressional-disclosures`, with two modules inside:
+One package, `packages/congressional-disclosures`, with three modules inside:
 
 - `src/backfill` — resumable sharded backfills. **Knows nothing about Congress.**
+- `src/extraction` — schema-bound PTR extraction from PDFs, OCR text, and filed pages.
 - `src/integrity.ts` — published-table checks. **Knows nothing about S3 or Mongo.**
 
 The module boundary is deliberate: if a change makes either statement false, the change
@@ -21,8 +22,9 @@ come from the AWS SDK's standard chain; model and OCR credentials arrive through
 port. If you find yourself reaching for `process.env`, add a config field instead.
 
 **Ports stay narrow.** Each interface is the smallest surface the pipeline uses, not a mirror of
-some client's API. `LanguageModel` has one method because extraction only ever needed one — the
-client it replaced had over forty. Resist adding a method for a caller that does not exist yet.
+some client's API. The backfill `LanguageModel` and extraction `CompletionClient` each have one
+method; encrypted-PDF rewriting is the one-function `PdfDecrypt` port. Resist adding a method for
+a caller that does not exist yet.
 
 **Strict TypeScript, and no `any`.** `strict`, `noUncheckedIndexedAccess` and
 `exactOptionalPropertyTypes` are all on. When a type fights you, the type is usually right.
@@ -92,5 +94,7 @@ npm run build
 npm publish --access public
 ```
 
-Publishing from the repository root fails: the workspace root is private with a placeholder
-version. Use the package directory or `npm publish --workspace <name>`.
+The repository root deliberately mirrors the package name, version, entrypoint and runtime
+dependencies so `npm install github:austin-starks/congressional-disclosures` is usable. It remains
+private so npm publication must still run from the package directory or with
+`npm publish --workspace congressional-disclosures`.

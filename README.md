@@ -22,25 +22,99 @@ Capitol Gains turns them into rows you can query.
 
 ---
 
-## One package, two modules
+## One package, three modules
 
 | Module | What it knows |
 |---|---|
 | `src/backfill` | how to run a resumable, sharded backfill against **any** storage, model and OCR backend. Knows nothing about Congress. |
+| `src/extraction` | how to plan bounded PTR reads, prove OCR row coverage, compare independent reads, reconcile against filed pages, and merge page ranges. Vendor calls enter through two narrow ports. |
 | `src/integrity.ts` | published-table integrity checks over filing, trade, and event rows — pure functions, tested without S3 or Mongo. Knows nothing about S3 or Mongo. |
 
 ```bash
 npm install congressional-disclosures
+# Until 0.2.0 is on npm, the repository root exposes the same package entrypoint:
+npm install github:austin-starks/congressional-disclosures
 ```
 
 ```ts
-import { runRound, repairRound } from "congressional-disclosures";
-import { auditPoliticalIntegrity } from "congressional-disclosures";
+import {
+  auditPoliticalIntegrity,
+  createEngineTranscriber,
+  planOcrTextRequests,
+  runMapReduceReads,
+  runRound,
+} from "congressional-disclosures";
 ```
+
+## Extract a scanned PTR
+
+The public extraction surface accepts a `CompletionClient` for model calls and a
+`PdfDecrypt` function before encrypted House pages are copied. OCR/rasterization stays with the
+calling application, where its native tools and credentials already live.
+
+```ts
+import {
+  auditPoliticalIntegrity,
+  createEngineTranscriber,
+  ocrReadsDisagreement,
+  planOcrTextRequests,
+  runMapReduceReads,
+  type CompletionClient,
+} from "congressional-disclosures";
+
+const completion: CompletionClient = {
+  complete: (request) => gateway.complete(request),
+};
+const transcribe = createEngineTranscriber(completion);
+
+const pages = await Promise.all(
+  uprightPagePngs.map(async (png) => {
+    const [first, second] = await Promise.all([
+      transcribe(png, 1),
+      transcribe(png, 2),
+    ]);
+    const disagreement = ocrReadsDisagreement(first, second);
+    if (disagreement) throw new Error(disagreement);
+    return first;
+  })
+);
+
+const budget = {
+  maxTableRowsPerWindow: 40,
+  maxRowsPerWindow: 80,
+  maxTableRowsPerRequest: 80,
+  maxAttachmentsPerRequest: 4,
+};
+const requests = await planOcrTextRequests(
+  [{ filingId: "house:20025000", pages }],
+  budget
+);
+
+const extraction = await runMapReduceReads(requests, runReadRequests, budget);
+if (extraction.consensus.failed !== 0) throw new Error("filing did not reach consensus");
+
+const integrity = auditPoliticalIntegrity({
+  now: new Date(),
+  filings: publishedFilings,
+  trades: publishedTrades,
+  events: publishedEvents,
+  indexed: chamberIndex,
+  receipts: roundReceipts,
+  shardKeys: resolvedManifestKeys,
+});
+if (!integrity.passed) throw new Error(JSON.stringify(integrity.findings));
+```
+
+Each engine read has a different retry-stable idempotency key: retrying read 1 replays read 1,
+while read 2 remains an independent paid call. Feed the planned attachments to
+`runMapReduceReads`; the caller-supplied runner decides how requests reach its model gateway.
+The package then proves row coverage, reads the filed pages independently, reconciles
+disagreements, and exposes `auditPoliticalIntegrity` for the published tables.
 
 ## No vendors in the type system
 
-A backfill runs against five interfaces. Swap any one without touching the pipeline:
+A backfill runs against five interfaces, and extraction adds only `CompletionClient.complete`
+and `PdfDecrypt`. Swap any adapter without touching the pipeline:
 
 ```
 DataStore       get · put · putIfAbsent · list · head · exists
@@ -150,7 +224,9 @@ live call is never stolen, short enough that a round repairs itself.
 ```
 packages/congressional-disclosures/
   src/backfill/     the framework: ports, sharding, receipts, lease, rounds, progress
+  src/extraction/   PTR planning, OCR proofs, independent reads, consensus, and merge
   src/integrity.ts  published-table checks: completeness, parity, orphans, sanity, freshness
+  examples/         executable public-API checks against a real filed PTR
 graphic/            Remotion source for the architecture animation
 ```
 
@@ -164,6 +240,13 @@ npm run typecheck
 ```
 
 Strict TypeScript everywhere: `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`.
+
+## Version history
+
+- **0.2.0** — adds the production PTR extraction pipeline: encrypted-PDF-safe request planning,
+  OCR row windows and coverage proofs, independent engine reads, source-page reconciliation,
+  bounded consensus, page orientation, and rescale fallback.
+- **0.1.0** — resumable backfill runtime and published-table integrity audit.
 
 ## The data
 

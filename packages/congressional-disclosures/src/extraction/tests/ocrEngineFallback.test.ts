@@ -1,4 +1,5 @@
 import {
+  createEngineTranscriber,
   enginePayload,
   readPageWithEngineFallback,
   type EngineFallbackConfig,
@@ -7,6 +8,7 @@ import {
 import type { OcrPageRead } from "../houseFilingExtraction";
 import { ocrPageGeometry } from "../ocrPageGeometry";
 import type { UprightPage } from "../pageOrientation";
+import type { CompletionClient } from "../ports";
 
 /**
  * The engine fallback's contract: the Mistral ladder decides when it can, an engine read is held to the
@@ -59,6 +61,28 @@ function config(overrides: Partial<EngineFallbackConfig> = {}): EngineFallbackCo
 }
 
 describe("readPageWithEngineFallback", () => {
+  it("uses separate stable idempotency keys for the two physical engine reads", async () => {
+    const keys: string[] = [];
+    const client: CompletionClient = {
+      complete: async (request) => {
+        keys.push(request.idempotencyKey ?? "");
+        return {
+          payload: { choices: [{ message: { content: "transcription" } }] },
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        };
+      },
+    };
+    const transcribe = createEngineTranscriber(client);
+
+    await Promise.all([transcribe(PNG, 1), transcribe(PNG, 2)]);
+    const firstKeys = [...keys];
+    await transcribe(PNG, 1);
+
+    expect(firstKeys).toHaveLength(2);
+    expect(firstKeys[0]).not.toBe(firstKeys[1]);
+    expect(keys[2]).toBe(firstKeys[0]);
+  });
+
   it("returns the Mistral read without consulting the engine when the ladder succeeds", async () => {
     let engineReads = 0;
     const read = await readPageWithEngineFallback(

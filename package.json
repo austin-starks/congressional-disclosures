@@ -1,13 +1,27 @@
 {
-  "name": "capitol-gains",
-  "version": "0.0.0",
+  "name": "congressional-disclosures",
+  "version": "0.2.0",
   "private": true,
-  "description": "Congressional trading disclosures: a resumable, sharded extraction pipeline with pluggable storage, model and OCR backends.",
+  "description": "U.S. congressional trading disclosures: resumable backfills, schema-bound extraction, and published-table integrity checks.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/austin-starks/capitol-gains.git"
+    "url": "git+https://github.com/austin-starks/congressional-disclosures.git"
   },
+  "main": "packages/congressional-disclosures/dist/index.js",
+  "types": "packages/congressional-disclosures/dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./packages/congressional-disclosures/dist/index.d.ts",
+      "require": "./packages/congressional-disclosures/dist/index.js",
+      "default": "./packages/congressional-disclosures/dist/index.js"
+    }
+  },
+  "files": [
+    "packages/congressional-disclosures/dist",
+    "packages/congressional-disclosures/README.md",
+    "LICENSE"
+  ],
   "workspaces": [
     "packages/*"
   ],
@@ -18,7 +32,13 @@
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present"
+    "lint": "npm run lint --workspaces --if-present",
+    "smoke:real-filing": "npm run build --workspace congressional-disclosures && node packages/congressional-disclosures/examples/real-filing-smoke.cjs",
+    "prepare": "npm run build --workspace ./packages/congressional-disclosures"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.716.0",
+    "pdf-lib": "^1.17.1"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",

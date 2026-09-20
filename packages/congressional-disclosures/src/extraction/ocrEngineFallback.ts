@@ -24,6 +24,9 @@ import type { CompletionClient } from "./ports";
 /** A `readPage` attempt that also reports the upright page it oriented, for the engine rung. */
 export type EnginePageAttempt = PageReadAttempt & { upright?: UprightPage };
 
+/** The two independent physical reads required before the fallback may accept a page. */
+export type EngineReadIndex = 1 | 2;
+
 /** The second engine: the Gemini Flash generation NexusGenAI routes (see the design doc before changing it). */
 export const DEFAULT_ENGINE_FALLBACK_OCR_MODEL = "google/gemini-3.5-flash";
 
@@ -34,10 +37,31 @@ const ENGINE_INSTRUCTIONS =
   "column order. Copy dates exactly as printed (MM/DD/YYYY). Do not summarize, do not skip rows, do not add " +
   "commentary. Output only the transcription.";
 
+/** A retry-stable identity for one of the two independent engine reads. */
+export function engineIdempotencyKey(
+  image: Buffer,
+  read: EngineReadIndex,
+  model: string = DEFAULT_ENGINE_FALLBACK_OCR_MODEL
+): string {
+  const requestHash = crypto
+    .createHash("sha256")
+    .update(model)
+    .update("\0")
+    .update(ENGINE_SYSTEM)
+    .update("\0")
+    .update(ENGINE_INSTRUCTIONS)
+    .update("\0")
+    .update(image)
+    .digest("hex")
+    .slice(0, 24);
+  return `ptr-engine-ocr-v2-r${read}-${requestHash}`;
+}
+
 /**
  * One page transcription by the second engine, through the same completion port every other model
  * call in the disclosure pipeline takes (orientation judge, extraction reads) — no separate credential.
- * Idempotency keys are keyed on the image bytes, so a repeat of the same page replays rather than double-spends.
+ * Each independent read has its own stable idempotency key. Retrying read 1 replays read 1,
+ * while read 2 is a separate physical request whose agreement is real rather than a replay.
  *
  * `model` defaults to the Gemini Flash generation the rung was measured on. `prepareImage`
  * normalizes the upright PNG for a request (the gateway-specific 4 MB JPEG fallback of
@@ -48,10 +72,9 @@ export function createEngineTranscriber(
   client: CompletionClient,
   model: string = DEFAULT_ENGINE_FALLBACK_OCR_MODEL,
   prepareImage: (png: Buffer) => Promise<Buffer> = (png) => Promise.resolve(png)
-): (png: Buffer) => Promise<string> {
-  return async (png: Buffer): Promise<string> => {
+): (png: Buffer, read: EngineReadIndex) => Promise<string> {
+  return async (png: Buffer, read: EngineReadIndex): Promise<string> => {
     const image = await prepareImage(png);
-    const pageHash = crypto.createHash("sha256").update(image).digest("hex").slice(0, 24);
     const { payload } = await client.complete({
       model,
       body: {
@@ -74,7 +97,7 @@ export function createEngineTranscriber(
           },
         ],
       },
-      idempotencyKey: `ptr-engine-ocr-${pageHash}`,
+      idempotencyKey: engineIdempotencyKey(image, read, model),
     });
     const content = (payload.choices as Array<Record<string, unknown>>)[0]?.message;
     const text = (content as Record<string, unknown> | undefined)?.content;
@@ -89,8 +112,8 @@ export interface EngineFallbackConfig {
   source: RescaleSource;
   reRender?: () => Promise<{ image: Buffer; checkImage: Buffer; dpi?: number }>;
   readPage(source: RescaleSource): Promise<EnginePageAttempt>;
-  /** One transcription of the upright page by the second engine. */
-  transcribe(png: Buffer): Promise<string>;
+  /** One of two independent transcriptions of the upright page by the second engine. */
+  transcribe(png: Buffer, read: EngineReadIndex): Promise<string>;
 }
 
 /** The payload shape an accepted engine read carries: no `pages`, so `ocrPageGeometry` yields null. */
@@ -123,7 +146,10 @@ export async function readPageWithEngineFallback(config: EngineFallbackConfig): 
     if (!upright) throw mistralFailure;
     let engineFailure: string;
     try {
-      const [first, second] = await Promise.all([config.transcribe(upright.image), config.transcribe(upright.image)]);
+      const [first, second] = await Promise.all([
+        config.transcribe(upright.image, 1),
+        config.transcribe(upright.image, 2),
+      ]);
       const scores = upright.scores;
       const shortfall = ocrPageShortfall(first, scores, upright.rotation);
       if (shortfall) {
