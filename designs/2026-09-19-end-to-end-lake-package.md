@@ -1,7 +1,7 @@
 # End-to-end congressional disclosure lake package
 
 > **Status: implemented and released.** The end-to-end product described here shipped and the
-> package is currently `congressional-disclosures@0.2.3`. This document records the architectural
+> package is currently `congressional-disclosures@0.2.4`. This document records the architectural
 > decision and acceptance criteria; the [README](../README.md) is the current user guide.
 
 ## Problem
@@ -104,7 +104,7 @@ Senate access is refused unless the caller explicitly accepts the site terms.
 2. SQLite storage, concrete providers, runtime adapters, and the CLI were implemented.
 3. Packed-package and encrypted-fixture smoke tests were added.
 4. Live official-source canaries were separated from deterministic fixture tests.
-5. The package was published and advanced through follow-up fixes to `0.2.3`.
+5. The package was published and advanced through follow-up fixes to `0.2.4`.
 6. NexusTrade installed the registry package and replaced congressional-domain imports with
    package entry points while retaining its Tigris, billing, scheduling, and alert adapters.
 7. The deployed NexusTrade lake, screener access, and `PoliticalTrades` backtest path were
