@@ -1,7 +1,7 @@
 {
   "name": "congressional-disclosures",
   "version": "0.2.0",
-  "description": "U.S. congressional trading disclosures: a resumable sharded backfill runtime, schema-bound PTR extraction (PDF text layer, OCR row windows, consensus reads), and integrity checks over the published filing, trade, and event tables.",
+  "description": "Build a queryable SQLite lake of U.S. congressional trading disclosures (House PTRs and Senate eFD filings) from official sources: discovery, PDF decrypt/render, OCR, consensus model extraction, resumable sync, and integrity audits.",
   "license": "MIT",
   "author": "Austin Starks",
   "repository": {
@@ -10,10 +10,27 @@
     "directory": "packages/congressional-disclosures"
   },
   "homepage": "https://github.com/austin-starks/congressional-disclosures#readme",
-  "keywords": ["congress", "disclosure", "ptr", "house", "senate", "backfill", "sharding", "idempotent", "s3", "etl", "resumable", "data-quality", "extraction", "ocr"],
+  "keywords": [
+    "congress",
+    "disclosures",
+    "ptr",
+    "house",
+    "senate",
+    "stock-trading",
+    "political-trades",
+    "edgar-adjacent",
+    "sqlite",
+    "ocr",
+    "etl",
+    "data-quality",
+    "extraction"
+  ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "engines": {
     "node": ">=22"
   },
@@ -22,12 +39,18 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.716.0",
-    "pdf-lib": "^1.17.1"
+    "cheerio": "^1.2.0",
+    "jszip": "^3.10.2",
+    "pdf-lib": "^1.17.1",
+    "sharp": "^0.33.5"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "prepublishOnly": "npm run build",
     "typecheck": "tsc -p tsconfig.build.json --noEmit",
     "test": "jest"
+  },
+  "bin": {
+    "congressional-disclosures": "dist/cli.js"
   }
 }
