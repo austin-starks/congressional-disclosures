@@ -1,6 +1,6 @@
 {
   "name": "congressional-disclosures",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Build a queryable SQLite lake of U.S. congressional trading disclosures from official House and Senate sources.",
   "license": "MIT",
@@ -18,10 +18,52 @@
       "types": "./packages/congressional-disclosures/dist/index.d.ts",
       "require": "./packages/congressional-disclosures/dist/index.js",
       "default": "./packages/congressional-disclosures/dist/index.js"
+    },
+    "./backfill": {
+      "types": "./packages/congressional-disclosures/dist/backfill/index.d.ts",
+      "require": "./packages/congressional-disclosures/dist/backfill/index.js",
+      "default": "./packages/congressional-disclosures/dist/backfill/index.js"
+    },
+    "./extraction": {
+      "types": "./packages/congressional-disclosures/dist/extraction/index.d.ts",
+      "require": "./packages/congressional-disclosures/dist/extraction/index.js",
+      "default": "./packages/congressional-disclosures/dist/extraction/index.js"
+    },
+    "./integrity": {
+      "types": "./packages/congressional-disclosures/dist/integrity.d.ts",
+      "require": "./packages/congressional-disclosures/dist/integrity.js",
+      "default": "./packages/congressional-disclosures/dist/integrity.js"
+    },
+    "./lake": {
+      "types": "./packages/congressional-disclosures/dist/lake/index.d.ts",
+      "require": "./packages/congressional-disclosures/dist/lake/index.js",
+      "default": "./packages/congressional-disclosures/dist/lake/index.js"
+    },
+    "./sources": {
+      "types": "./packages/congressional-disclosures/dist/sources/index.d.ts",
+      "require": "./packages/congressional-disclosures/dist/sources/index.js",
+      "default": "./packages/congressional-disclosures/dist/sources/index.js"
+    },
+    "./storage": {
+      "types": "./packages/congressional-disclosures/dist/storage/index.d.ts",
+      "require": "./packages/congressional-disclosures/dist/storage/index.js",
+      "default": "./packages/congressional-disclosures/dist/storage/index.js"
     }
   },
   "files": [
     "packages/congressional-disclosures/dist",
+    "backfill.js",
+    "backfill.d.ts",
+    "extraction.js",
+    "extraction.d.ts",
+    "integrity.js",
+    "integrity.d.ts",
+    "lake.js",
+    "lake.d.ts",
+    "sources.js",
+    "sources.d.ts",
+    "storage.js",
+    "storage.d.ts",
     "packages/congressional-disclosures/README.md",
     "LICENSE"
   ],

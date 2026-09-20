@@ -4,10 +4,15 @@ Guidance for coding agents working in this repository. `CLAUDE.md` is a symlink 
 
 ## What this repository is
 
-One package, `packages/congressional-disclosures`, with three modules inside:
+One public package, `packages/congressional-disclosures`, with these product layers:
 
 - `src/backfill` — resumable sharded backfills. **Knows nothing about Congress.**
 - `src/extraction` — schema-bound PTR extraction from PDFs, OCR text, and filed pages.
+- `src/sources` — official House and Senate discovery and download clients.
+- `src/lake` — filing, trade and event normalization shared with production consumers.
+- `src/storage` — the turnkey SQLite repository plus optional Parquet publication.
+- `src/runtime` and `src/providers` — concrete PDF, OCR and completion adapters for the CLI.
+- `src/sync.ts` and `src/cli.ts` — the end-to-end product path.
 - `src/integrity.ts` — published-table checks. **Knows nothing about S3 or Mongo.**
 
 The module boundary is deliberate: if a change makes either statement false, the change
@@ -17,14 +22,15 @@ taxed the only consumer twice and served a hypothetical generic user who never c
 
 ## Rules that are not negotiable
 
-**No secrets, no `process.env`.** No package here reads the environment. Storage credentials
-come from the AWS SDK's standard chain; model and OCR credentials arrive through the injected
-port. If you find yourself reaching for `process.env`, add a config field instead.
+**No secrets in source or logs.** Reusable library modules receive credentials and configuration
+through explicit options. The CLI is the one environment boundary: it may read documented keys
+such as `MISTRAL_API_KEY` and `OPENROUTER_API_KEY`, but it must never print their values. S3-compatible
+storage may use the AWS SDK's standard credential chain.
 
 **Ports stay narrow.** Each interface is the smallest surface the pipeline uses, not a mirror of
-some client's API. The backfill `LanguageModel` and extraction `CompletionClient` each have one
-method; encrypted-PDF rewriting is the one-function `PdfDecrypt` port. Resist adding a method for
-a caller that does not exist yet.
+some client's API. The extraction `CompletionClient` and encrypted-PDF `PdfDecrypt` ports each
+have one method. The default CLI supplies concrete implementations; custom applications replace
+only the boundaries they need. Resist adding a method for a caller that does not exist yet.
 
 **Strict TypeScript, and no `any`.** `strict`, `noUncheckedIndexedAccess` and
 `exactOptionalPropertyTypes` are all on. When a type fights you, the type is usually right.

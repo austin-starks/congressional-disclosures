@@ -145,6 +145,10 @@ Official-source clients, provider clients, the repository, and progress
 reporting are injectable. The default CLI supplies concrete implementations;
 applications only replace a component when they actually need to.
 
+Large applications can import focused entry points such as
+`congressional-disclosures/extraction`, `/lake`, `/sources`, `/backfill`,
+`/integrity`, and `/storage` so a server that does not use SQLite never loads it.
+
 ## NexusTrade and other production lakes
 
 SQLite is the turnkey public path. NexusTrade keeps its existing native
