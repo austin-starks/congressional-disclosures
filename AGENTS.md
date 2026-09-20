@@ -39,6 +39,11 @@ only the boundaries they need. Resist adding a method for a caller that does not
 its failure mode silently poisoned 613 filings. `acquireProviderLease` in the system this came
 from had *zero* tests, which is exactly why that shipped.
 
+**The public and npm READMEs are one document.** `README.md` is what GitHub shows and
+`packages/congressional-disclosures/README.md` is what npm publishes. Keep them byte-for-byte
+identical. A user must not get a different product promise or command depending on which page
+they opened. Verify with `cmp README.md packages/congressional-disclosures/README.md`.
+
 ## Never copy pages from a PDF you have not decrypted
 
 Every electronic House PTR sampled — 2015, 2018, 2023, 2024 — is **RC4-encrypted**. `pdf-lib`
@@ -46,8 +51,10 @@ opens one with `ignoreEncryption: true` and then copies its pages as **blank pag
 error**: the copy carries encrypted streams into a document with no encryption dictionary. The
 page renders empty and yields about one character of text instead of tens of thousands.
 
-So any code that splits, crops or merges a filing must decrypt first. Decrypt with PDFium —
-it opens these with an empty user password — and copy pages out of the decrypted document.
+So any code that splits, crops or merges a filing must decrypt first. The default CLI rewrites
+encrypted input with Poppler's `pdftocairo` before copying pages. A host application may inject
+PDFium or another equivalent decryptor, but the resulting document must be demonstrably
+unencrypted and nonblank before any page split.
 
 This is silent in every direction. No exception, no warning, and the model dutifully reports
 that the page has no rows, so the filing is recorded as a legitimate extraction failure. It cost
@@ -100,7 +107,8 @@ npm run build
 npm publish --access public
 ```
 
-The repository root deliberately mirrors the package name, version, entrypoint and runtime
-dependencies so `npm install github:austin-starks/congressional-disclosures` is usable. It remains
-private so npm publication must still run from the package directory or with
-`npm publish --workspace congressional-disclosures`.
+The public repository root deliberately mirrors the package name, version, entrypoint and runtime
+dependencies so `npm install github:austin-starks/congressional-disclosures` is usable. npm
+publication must still run from the package directory or with
+`npm publish --workspace congressional-disclosures`; publishing the private workspace root is not
+the release path.

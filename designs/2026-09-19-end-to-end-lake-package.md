@@ -1,11 +1,15 @@
 # End-to-end congressional disclosure lake package
 
+> **Status: implemented and released.** The end-to-end product described here shipped and the
+> package is currently `congressional-disclosures@0.2.3`. This document records the architectural
+> decision and acceptance criteria; the [README](../README.md) is the current user guide.
+
 ## Problem
 
-`congressional-disclosures@0.2.0` currently exposes the extraction mechanics and a
-generic backfill runtime, but it cannot discover a filing, download it, persist the
-normalized rows, or run from a command line. That makes the package name promise a
-product that the package does not provide.
+At `congressional-disclosures@0.2.0`, the package exposed extraction mechanics and a
+generic backfill runtime, but could not discover a filing, download it, persist normalized
+rows, or run from a command line. The package name promised a product that the package did
+not yet provide.
 
 The production implementation already exists in NexusTrade. The package should own
 that congressional domain logic, while NexusTrade keeps only infrastructure adapters
@@ -51,9 +55,9 @@ NexusTrade owns:
 
 `PoliticalRepository` is the engine boundary. It reads all current rows and atomically
 applies complete-filing replacements. The package ships `SQLitePoliticalRepository`
-as the default local implementation. `S3ParquetPoliticalRepository` preserves the
-year-sharded manifest protocol and delegates physical Parquet encoding to a narrow
-`ParquetWriter` port, allowing NexusTrade to use its proven DuckDB/Tigris writer.
+as the default local implementation. `ManifestParquetPoliticalRepository` preserves the
+year-sharded manifest protocol and delegates physical Parquet encoding to the narrow
+`ParquetLakePort`, allowing NexusTrade to use its proven DuckDB/Tigris writer.
 
 SQLite contains these public tables:
 
@@ -89,21 +93,24 @@ paid response is cached by a stable request hash. A second run must reuse those 
 - `audit`: run the lake integrity checks and exit non-zero on failure.
 
 `sync` supports `--db`, `--cache-dir`, `--since`, `--year`, `--chamber`,
-`--max-filings`, `--resume`, `--dry-run`, and `--accept-senate-terms`.
+`--max-filings`, `--model`, `--ocr-model`, `--dry-run`, and
+`--accept-senate-terms`. Resumption is the default behavior rather than an optional flag.
 Senate access is refused unless the caller explicitly accepts the site terms.
 
-## Migration and release order
+## Migration and release record
 
-1. Port and parity-test the source clients, normalization, event, and lake contracts.
-2. Implement SQLite storage and the CLI.
-3. Exercise a packed tarball in a clean project and a clean NexusTrade worktree.
-4. Run live canaries for House text, House encrypted/scan, Senate HTML, and Senate paper.
-5. Publish `0.2.0` only after those gates pass.
-6. Install the exact registry version in NexusTrade and replace duplicated imports.
-7. Merge to NexusTrade main, deploy from the primary checkout, and verify the live lake,
-   screener, and `run_compute` path before deleting the temporary comparison path.
+1. Source clients, normalization, event construction, and lake contracts were ported and
+   parity-tested.
+2. SQLite storage, concrete providers, runtime adapters, and the CLI were implemented.
+3. Packed-package and encrypted-fixture smoke tests were added.
+4. Live official-source canaries were separated from deterministic fixture tests.
+5. The package was published and advanced through follow-up fixes to `0.2.3`.
+6. NexusTrade installed the registry package and replaced congressional-domain imports with
+   package entry points while retaining its Tigris, billing, scheduling, and alert adapters.
+7. The deployed NexusTrade lake, screener access, and `PoliticalTrades` backtest path were
+   verified after integration.
 
-## Definition of done
+## Acceptance criteria
 
 - The README quick start creates a queryable SQLite lake from official sources.
 - The packed and registry artifacts contain every runtime dependency and executable.
@@ -111,3 +118,6 @@ Senate access is refused unless the caller explicitly accepts the site terms.
 - Both chambers pass real-source canaries; the encrypted House fixture renders nonblank.
 - NexusTrade writes the same Tigris/Parquet schema through the package contracts.
 - NexusTrade has no duplicate congressional parsing, normalization, or event logic.
+
+These criteria were the release gate. Future changes should preserve them rather than treating
+this completed design as a new migration plan.

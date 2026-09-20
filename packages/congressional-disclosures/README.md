@@ -1,142 +1,317 @@
 # congressional-disclosures
 
-Build a queryable database of U.S. congressional stock-trading disclosures —
-House Clerk periodic transaction reports and Senate eFD filings — from the
-official sources, with your own model credentials.
+Build a local, queryable database of U.S. congressional financial disclosures
+from the official House Clerk and Senate eFD sources.
+
+[![npm](https://img.shields.io/npm/v/congressional-disclosures)](https://www.npmjs.com/package/congressional-disclosures)
+[![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/austin-starks/congressional-disclosures/blob/main/LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D22.5-brightgreen)](https://nodejs.org/)
+
+The package discovers filings, downloads their original documents, decrypts
+House PDFs, OCRs scans, extracts transactions with independent model reads,
+reconciles disagreements, and writes a resumable SQLite data lake. It covers
+both the House and Senate and retains source URLs, document hashes, extraction
+status, repeated reports, and amendment history.
+
+- **Want the data immediately?** Download the current audited
+  [Congressional Stock Trades dataset](https://huggingface.co/datasets/austin-starks/congressional-stock-trades).
+- **Want your own local lake?** Run the CLI against the official sources.
+- **Building another product?** Install the library and replace only the model,
+  OCR, cache, or storage adapters you need to own.
+
+## What can you investigate?
+
+Once the lake exists, ordinary SQL can answer questions such as:
+
+- Which members disclosed the most purchases in a given year?
+- Which stocks attracted purchases from the most distinct members?
+- How long did members wait between a transaction and its disclosure?
+- How do House and Senate trading patterns differ?
+- Which filings failed extraction, and why?
+- What did the public know on a particular date, before a later amendment?
+
+Performance questions require market prices in addition to disclosure data.
+For example, “Which politician's disclosed purchases performed best?” needs an
+explicit return horizon, weighting method, and decision about whether returns
+begin on the transaction date or the public disclosure date. The lake preserves
+both dates so that analysis can state that choice instead of hiding it.
+
+## Build a SQLite lake
+
+### 1. Check the machine
+
+Node.js 22.5 or newer is required. Install Poppler and Tesseract first:
 
 ```bash
-export OPENROUTER_API_KEY=...    # any OpenAI-compatible endpoint works
-export MISTRAL_API_KEY=...       # required only for scanned/image filings
+# macOS
+brew install poppler tesseract
 
-npx congressional-disclosures doctor
-npx congressional-disclosures sync --db ./congress.db --since 2024 --accept-senate-terms
-npx congressional-disclosures audit --db ./congress.db
-
-sqlite3 ./congress.db "SELECT filer_last, transaction_date, printed_ticker, action, amount_bracket
-                       FROM political_trades ORDER BY available_at DESC LIMIT 10;"
+# Debian or Ubuntu
+apt-get install poppler-utils tesseract-ocr
 ```
 
-`sync` discovers official House and Senate filings, downloads the source
-documents, decrypts and renders PDFs, OCRs scanned pages, extracts transaction
-rows with consensus model reads, normalizes them into filings, trades, and
-trade events, and commits each filing atomically to SQLite. Runs are resumable:
-re-run the same command and it skips completed filings, retries failed ones, and
-reuses every cached paid response without re-billing.
+Then provide your extraction credentials and run the preflight check:
 
-If you want the current audited lake without running extraction yourself, use the
-[Congressional Stock Trades dataset](https://huggingface.co/datasets/austin-starks/congressional-stock-trades).
-It publishes Parquet files for filings, reported transaction rows, and reconciled
-event versions. Read the dataset's statutory-use notice before using the records.
+```bash
+export OPENROUTER_API_KEY=...  # model extraction
+export MISTRAL_API_KEY=...     # OCR for scanned/image filings
 
-## Requirements
+npx congressional-disclosures doctor
+```
 
-- **Node.js ≥ 22.5** (uses the built-in `node:sqlite`).
-- **Poppler** (`pdftotext`, `pdftocairo`, `pdftoppm`) for PDF text extraction and
-  decryption of encrypted House filings: `brew install poppler` on macOS,
-  `apt-get install poppler-utils` on Debian/Ubuntu. `doctor` checks for it and
-  names exactly what is missing.
-- **Tesseract** for word-level orientation checks on scanned pages:
-  `brew install tesseract` on macOS, `apt-get install tesseract-ocr` on
-  Debian/Ubuntu.
-- API keys above. House PDF extraction needs the completion key; scanned
-  filings and Senate paper filings also need the OCR key.
+`doctor` reports whether each executable and credential is present without
+printing credential values.
+
+### 2. Sync official filings
+
+```bash
+npx congressional-disclosures sync \
+  --db ./congress.db \
+  --since 2024 \
+  --accept-senate-terms
+
+npx congressional-disclosures status --db ./congress.db
+npx congressional-disclosures audit --db ./congress.db
+```
+
+Senate access requires `--accept-senate-terms`, acknowledging the eFD site's
+usage agreement. Start with `--dry-run` or `--max-filings 5` when evaluating
+the workflow. Model and OCR calls can cost money; raw documents and provider
+responses are cached by content/request hash so reruns do not pay for the same
+work again.
+
+### 3. Query it
+
+Recent normalized transaction rows:
+
+```bash
+sqlite3 ./congress.db \
+  "SELECT filer_first || ' ' || filer_last AS member,
+          transaction_date,
+          COALESCE(printed_ticker, resolved_ticker) AS ticker,
+          action,
+          amount_bracket,
+          available_at
+   FROM political_trades
+   ORDER BY available_at DESC
+   LIMIT 10;"
+```
+
+Members with the most purchases first disclosed in 2024:
+
+```sql
+SELECT
+  filer_first || ' ' || filer_last AS member,
+  chamber,
+  COUNT(*) AS purchases
+FROM political_trade_events
+WHERE action = 'purchase'
+  AND first_available_at >= '2024-01-01'
+  AND first_available_at < '2025-01-01'
+  AND superseded_at IS NULL
+GROUP BY member, chamber
+ORDER BY purchases DESC
+LIMIT 20;
+```
+
+Stocks purchased by the most distinct members:
+
+```sql
+SELECT
+  ticker,
+  COUNT(*) AS purchases,
+  COUNT(DISTINCT filer_key) AS distinct_members
+FROM political_trade_events
+WHERE action = 'purchase'
+  AND ticker IS NOT NULL
+  AND superseded_at IS NULL
+GROUP BY ticker
+ORDER BY distinct_members DESC, purchases DESC
+LIMIT 20;
+```
+
+Average disclosure lag by chamber:
+
+```sql
+SELECT
+  chamber,
+  ROUND(AVG(julianday(first_available_at) - julianday(transaction_date)), 1)
+    AS average_days_to_disclosure
+FROM political_trade_events
+WHERE transaction_date IS NOT NULL
+  AND superseded_at IS NULL
+GROUP BY chamber;
+```
+
+Use `political_trade_events` for counts and aggregate analysis. It consolidates
+the same economic trade when it is reported repeatedly and versions amendments
+instead of double-counting them.
+
+## What lands in SQLite?
+
+| Table | Grain | Use it for |
+|---|---|---|
+| `political_filings` | One official document | Coverage, provenance, extraction failures, and audit trails |
+| `political_trades` | One transaction row printed on a filing | Inspecting exactly what a document reported |
+| `political_trade_events` | One version of a consolidated economic event | Counts, aggregates, point-in-time research, and downstream signals |
+
+Private tables record schema migrations, sync runs, and per-filing receipts.
+Original documents and paid responses live in the content-addressed cache
+selected by `--cache-dir`; large blobs are not stored inside SQLite.
+
+Two dates matter:
+
+- `transaction_date` is when the disclosed transaction occurred.
+- `available_at`/`first_available_at` is when the information became public.
+
+For a realistic backtest or alert, never make a trade visible before its public
+availability timestamp. Later corrections are visible only from their own
+`available_at` timestamp until `superseded_at`.
 
 ## Commands
 
-| Command | Purpose |
+| Command | What it does |
 |---|---|
-| `doctor` | Verify Node, Poppler, credentials, and storage before a paid run. |
-| `sync` | Discover, download, extract, and commit filings. |
-| `status --db FILE` | Lake counts: filings, trades, events, failures. |
-| `audit --db FILE` | Integrity checks; non-zero exit on failure. |
+| `doctor` | Checks Node, PDF/OCR tools, and provider configuration. |
+| `sync --db FILE --since YEAR` | Discovers, extracts, and stores filings. |
+| `status --db FILE` | Prints filing, trade, event, and failure counts. |
+| `audit --db FILE` | Runs orphan, event, amount, date, freshness, and sanity checks. |
 
-`sync` options: `--db`, `--cache-dir`, `--since YEAR`, `--year YEAR`,
-`--chamber house\|senate\|both`, `--max-filings N`, `--model MODEL`,
-`--ocr-model MODEL`, `--dry-run`, `--accept-senate-terms`.
+Useful `sync` options:
 
-- **`--dry-run`** discovers and plans but performs no downloads past the
-  indexes, no provider calls, and no writes.
-- Senate access requires `--accept-senate-terms`, acknowledging the eFD
-  site's usage agreement.
-- Sync always resumes: completed filings are skipped, failed ones retried.
-  Delete the DB (and cache) to start over.
+```text
+--year YEAR
+--chamber house|senate|both
+--max-filings N
+--model MODEL
+--ocr-model MODEL
+--cache-dir DIR
+--dry-run
+--accept-senate-terms
+```
 
-## What lands in SQLite
+`--dry-run` discovers and plans without downloading filing documents, calling
+providers, or writing lake rows. A normal rerun resumes from committed filings,
+retries failed filings, and reuses cached provider responses.
 
-Public tables:
+## Use it as a library
 
-- **`political_filings`** — one row per official document, with source URL,
-  content hash, parse method, extraction status, and provenance.
-- **`political_trades`** — normalized transaction rows (owner, action, dates,
-  printed ticker, statutory amount bracket and bounds, comments).
-- **`political_trade_events`** — economic events consolidating repeated and
-  amended observations of the same underlying transaction, with version
-  history and supersession timestamps.
-
-Private tables (`sync_runs`, `sync_receipts`, `schema_migrations`) track run
-history and per-filing commit receipts. Raw documents and paid responses live
-in a content-addressed filesystem cache (`--cache-dir`), never in the DB.
-
-## Library API
-
-The CLI is a thin layer over a programmatic core; every official-source
-client, provider, and storage backend is injectable:
+```bash
+npm install congressional-disclosures
+```
 
 ```ts
 import {
-  syncPoliticalDisclosures,
-  SQLitePoliticalRepository,
-  OpenAiCompatibleCompletionClient,
-  MistralOcrClient,
   LocalCache,
+  MistralOcrClient,
+  OpenAiCompatibleCompletionClient,
+  SQLitePoliticalRepository,
+  syncPoliticalDisclosures,
 } from "congressional-disclosures";
 
 const cache = new LocalCache("./.congressional-disclosures");
-const summary = await syncPoliticalDisclosures({
-  repository: new SQLitePoliticalRepository("./congress.db"),
+const repository = new SQLitePoliticalRepository("./congress.db");
+
+try {
+  const summary = await syncPoliticalDisclosures({
+    repository,
+    cache,
+    completion: new OpenAiCompatibleCompletionClient({
+      apiKey: process.env.OPENROUTER_API_KEY!,
+      cache,
+    }),
+    ocr: new MistralOcrClient({
+      apiKey: process.env.MISTRAL_API_KEY!,
+      cache,
+    }),
+    sinceYear: 2024,
+    acceptSenateTerms: true,
+  });
+  console.log(summary);
+} finally {
+  await repository.close();
+}
+```
+
+Official-source clients, provider clients, storage, caching, and progress
+reporting are injectable. The CLI supplies working defaults; an application
+only replaces a boundary when it has a concrete reason to.
+
+Focused entry points—`/extraction`, `/lake`, `/sources`, `/backfill`,
+`/integrity`, and `/storage`—let a server import the congressional domain
+without loading the SQLite runtime.
+
+## Production Parquet lakes
+
+SQLite is the turnkey local path. A production application can retain its own
+S3-compatible object store and Parquet writer by supplying a `ParquetLakePort`
+to `ManifestParquetPoliticalRepository`:
+
+```ts
+import {
+  ManifestParquetPoliticalRepository,
+  syncPoliticalDisclosures,
+} from "congressional-disclosures";
+
+const repository = new ManifestParquetPoliticalRepository(parquetLakePort);
+await syncPoliticalDisclosures({
+  repository,
   cache,
-  completion: new OpenAiCompatibleCompletionClient({ apiKey: process.env.OPENROUTER_API_KEY!, cache }),
-  ocr: new MistralOcrClient({ apiKey: process.env.MISTRAL_API_KEY!, cache }),
-  sinceYear: 2024,
+  completion,
+  ocr,
+  sinceYear: 2012,
   acceptSenateTerms: true,
 });
 ```
 
-### S3-compatible Parquet lake (production path)
+The package owns discovery, downloads, PDF handling, OCR validation, extraction,
+normalization, event construction, and integrity rules. The host application
+keeps its credentials, billing, physical Parquet implementation, scheduling,
+alerts, and application-specific enrichment.
 
-For production lake consumers (e.g. NexusTrade's Tigris-backed lake),
-`ManifestParquetPoliticalRepository` preserves the year-sharded,
-manifest-published Parquet protocol and delegates physical Parquet encoding to
-a narrow `ParquetLakePort` you implement against your own writer:
+## Reliability and limitations
 
-```ts
-import { ManifestParquetPoliticalRepository } from "congressional-disclosures";
+The reliability work is part of the product:
 
-const repository = new ManifestParquetPoliticalRepository(myParquetLakePort);
-await syncPoliticalDisclosures({ repository, cache, /* ... */ });
-```
+- House PDFs are classified using text Poppler actually extracts. Encrypted
+  documents are rewritten before any page is copied or split.
+- Scans are rendered page by page and checked at independent resolutions.
+- Independent model reads must agree; disagreements trigger reconciliation
+  against the filed pages.
+- One filing is replaced atomically. Failed filings remain present with a named
+  reason and can be retried.
+- A completed `sync` checks coverage against the official filings in that run;
+  `audit` checks orphan rows, consolidated events, dates, amounts, and freshness.
 
-## Extraction pipeline
+The source records still impose unavoidable limits:
 
-For each filing: download → decrypt (Poppler) → classify text layer vs scan →
-(for scans) OCR each page → schema-bound model extraction with **independent
-read passes and consensus** (disagreeing reads trigger a third and a majority
-vote) → row sanitization (statutory amount bounds, date windows) → atomic
-commit with receipts. Every model and OCR response is cached by a stable
-request hash, so a re-run never pays for the same read twice.
+- Filings are self-reported and may be late, incomplete, or amended.
+- Dollar values are statutory ranges, not exact position sizes or profits.
+- A reported owner may be the member, spouse, joint account, or dependent child.
+- Options and private assets do not behave like ordinary stock purchases.
+- Extraction is probabilistic. Preserve provenance and inspect source filings
+  before treating an individual row as definitive.
 
-## Development
+This software and dataset are for research and informational use, not investment
+advice. Review the dataset's statutory-use notice before redistributing records.
+
+## Development and release evidence
 
 ```bash
 npm install
-npm run build && npm test        # from the repo root (workspaces)
-npm run smoke:fixture            # compiled-package smoke test against a checked-in encrypted filing
+npm run typecheck
+npm test
+npm run build
+npm run smoke:fixture
+npm run smoke:live-senate -- 2024 /tmp/congressional-senate-canary
 ```
 
-The fixture smoke test uses scripted model reads — it proves packaging and the
-deterministic pipeline, not live extraction. Live source canaries are run
-separately before each release.
+The fixture smoke test runs the compiled package against a checked-in encrypted
+filing with scripted provider responses. It proves packaging and deterministic
+pipeline behavior; live official-source canaries are separate release gates.
 
 ## License
 
-MIT
+Code is released under the [MIT License](https://github.com/austin-starks/congressional-disclosures/blob/main/LICENSE).
+Government disclosure records may carry separate statutory restrictions; consult
+the notice distributed with the public dataset.
