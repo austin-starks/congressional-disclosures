@@ -11,6 +11,7 @@ One public package, `packages/congressional-disclosures`, with these product lay
 - `src/sources` — official House and Senate discovery and download clients.
 - `src/lake` — filing, trade and event normalization shared with production consumers.
 - `src/storage` — the turnkey SQLite repository plus optional Parquet publication.
+- `src/dataset` — checksum-verified download of the public Hugging Face Parquet snapshot.
 - `src/runtime` and `src/providers` — concrete PDF, OCR and completion adapters for the CLI.
 - `src/sync.ts` and `src/cli.ts` — the end-to-end product path.
 - `src/integrity.ts` — published-table checks. **Knows nothing about S3 or Mongo.**
@@ -31,6 +32,13 @@ storage may use the AWS SDK's standard credential chain.
 some client's API. The extraction `CompletionClient` and encrypted-PDF `PdfDecrypt` ports each
 have one method. The default CLI supplies concrete implementations; custom applications replace
 only the boundaries they need. Resist adding a method for a caller that does not exist yet.
+
+**Keep download and rebuild as distinct product paths.** `download` fetches the already-audited
+public Parquet snapshot without provider keys. `sync` discovers official filings and builds or
+refreshes SQLite. The downloader must calculate required bytes from `snapshot.json`, compare them
+with free space on the destination filesystem before fetching data files, print both values in GB,
+reject unsafe manifest paths, and verify every file's declared size and SHA-256 before publishing
+the local snapshot marker.
 
 **Strict TypeScript, and no `any`.** `strict`, `noUncheckedIndexedAccess` and
 `exactOptionalPropertyTypes` are all on. When a type fights you, the type is usually right.

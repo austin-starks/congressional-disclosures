@@ -13,8 +13,9 @@ reconciles disagreements, and writes a resumable SQLite data lake. It covers
 both the House and Senate and retains source URLs, document hashes, extraction
 status, repeated reports, and amendment history.
 
-- **Want the data immediately?** Download the current audited
-  [Congressional Stock Trades dataset](https://huggingface.co/datasets/austin-starks/congressional-stock-trades).
+- **Want the data immediately?** Run `npx congressional-disclosures download`.
+  It downloads the current audited [Congressional Stock Trades dataset](https://huggingface.co/datasets/austin-starks/congressional-stock-trades)
+  from Hugging Face without model or OCR credentials.
 - **Want your own local lake?** Run the CLI against the official sources.
 - **Building another product?** Install the library and replace only the model,
   OCR, cache, or storage adapters you need to own.
@@ -35,6 +36,32 @@ For example, “Which politician's disclosed purchases performed best?” needs 
 explicit return horizon, weighting method, and decision about whether returns
 begin on the transaction date or the public disclosure date. The lake preserves
 both dates so that analysis can state that choice instead of hiding it.
+
+## Download the audited public dataset
+
+For the fastest path to the data, download the published Parquet snapshot:
+
+```bash
+npx congressional-disclosures download
+```
+
+The default destination is `./congressional-stock-trades`. Before downloading,
+the CLI reads the public `snapshot.json`, calculates the exact selected download
+size, and prints both required and available disk space in GB. It stops before
+fetching data files if the destination does not have enough room. Every Parquet
+file is checked against its published byte size and SHA-256; reruns verify and
+reuse files that are already correct.
+
+Download a smaller slice when you do not need the complete history:
+
+```bash
+npx congressional-disclosures download --table political_trade_events --year 2026
+npx congressional-disclosures download --out ./data/congressional-trades
+```
+
+The download contains Parquet files plus `snapshot.json`. All three public
+tables include `sourceUrl`, which links each filing, printed transaction, or
+reconciled event back to the official House or Senate record.
 
 ## Build a SQLite lake
 
@@ -173,6 +200,7 @@ availability timestamp. Later corrections are visible only from their own
 | Command | What it does |
 |---|---|
 | `doctor` | Checks Node, PDF/OCR tools, and provider configuration. |
+| `download` | Downloads and verifies the audited public Parquet snapshot from Hugging Face. |
 | `sync --db FILE --since YEAR` | Discovers, extracts, and stores filings. |
 | `status --db FILE` | Prints filing, trade, event, and failure counts. |
 | `audit --db FILE` | Runs orphan, event, amount, date, freshness, and sanity checks. |

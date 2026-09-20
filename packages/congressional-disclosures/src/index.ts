@@ -1,4 +1,5 @@
 export * from "./backfill/index";
+export * from "./dataset";
 export * from "./extraction";
 export * from "./integrity";
 export * from "./lake";

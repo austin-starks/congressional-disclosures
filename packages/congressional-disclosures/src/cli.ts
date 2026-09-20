@@ -3,6 +3,7 @@
 import { resolve } from "node:path";
 
 import { LocalCache } from "./runtime/cache";
+import { downloadCongressionalDataset, type DatasetDownloadPlan } from "./dataset";
 import { isHelpRequest } from "./cliArgs";
 import { commandAvailable } from "./runtime/poppler";
 import { MistralOcrClient } from "./providers/mistralOcr";
@@ -46,9 +47,15 @@ function help(): void {
 
 Commands:
   doctor                         Check local runtime and provider configuration
+  download                       Download the audited public Parquet dataset
   sync --db FILE --since YEAR    Discover, extract, and persist official filings
   status --db FILE               Show local lake counts
   audit --db FILE                Run integrity checks (non-zero exit on failure)
+
+Download options:
+  --out DIR                      Default: ./congressional-stock-trades
+  --table NAME                   Download one table only
+  --year YEAR                    Download one published year only
 
 Sync options:
   --cache-dir DIR                Raw documents and paid response cache
@@ -82,6 +89,21 @@ async function doctor(): Promise<number> {
   return checks.pdftotext && checks.pdftocairo && checks.pdftoppm && checks.tesseract ? 0 : 1;
 }
 
+function gigabytes(bytes: number): string {
+  return (bytes / 1_000_000_000).toFixed(4);
+}
+
+function megabytes(bytes: number): string {
+  return (bytes / 1_000_000).toFixed(2);
+}
+
+function printDownloadPlan(plan: DatasetDownloadPlan): void {
+  process.stderr.write(
+    `Disk check: ${gigabytes(plan.requiredBytes)} GB (${megabytes(plan.requiredBytes)} MB) required ` +
+    `for ${plan.files} files; ${gigabytes(plan.availableBytes)} GB free at ${plan.destination}.\n`,
+  );
+}
+
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
   if (isHelpRequest(args)) {
@@ -91,6 +113,26 @@ async function main(): Promise<number> {
   const { command, flags } = parseArgs(args);
   if (flags.has("help")) { help(); return 0; }
   if (command === "doctor") return doctor();
+  if (command === "download") {
+    const year = numberFlag(flags, "year");
+    const table = textFlag(flags, "table");
+    const result = await downloadCongressionalDataset({
+      destination: resolve(textFlag(flags, "out", "./congressional-stock-trades") ?? "./congressional-stock-trades"),
+      ...(table ? { table } : {}),
+      ...(year !== undefined ? { year } : {}),
+      onPlan: printDownloadPlan,
+      onProgress: (message) => process.stderr.write(`${message}\n`),
+    });
+    process.stdout.write(`${JSON.stringify({
+      dataset: result.dataset,
+      destination: result.destination,
+      generatedAt: result.generatedAt,
+      downloadedFiles: result.downloadedFiles,
+      reusedFiles: result.reusedFiles,
+      downloadedBytes: result.bytes,
+    }, null, 2)}\n`);
+    return 0;
+  }
 
   const dbPath = resolve(textFlag(flags, "db", "./congressional-disclosures.sqlite") ?? "./congressional-disclosures.sqlite");
   const repository = new SQLitePoliticalRepository(dbPath);

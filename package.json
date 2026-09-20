@@ -1,6 +1,6 @@
 {
   "name": "congressional-disclosures",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "description": "Build a queryable SQLite lake of U.S. congressional trading disclosures from official House and Senate sources.",
   "license": "MIT",
@@ -18,6 +18,11 @@
       "types": "./packages/congressional-disclosures/dist/index.d.ts",
       "require": "./packages/congressional-disclosures/dist/index.js",
       "default": "./packages/congressional-disclosures/dist/index.js"
+    },
+    "./dataset": {
+      "types": "./packages/congressional-disclosures/dist/dataset/index.d.ts",
+      "require": "./packages/congressional-disclosures/dist/dataset/index.js",
+      "default": "./packages/congressional-disclosures/dist/dataset/index.js"
     },
     "./backfill": {
       "types": "./packages/congressional-disclosures/dist/backfill/index.d.ts",
