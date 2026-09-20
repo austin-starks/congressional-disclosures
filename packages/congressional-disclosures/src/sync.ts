@@ -1,18 +1,27 @@
 import { randomUUID } from "node:crypto";
 
-import { PDFDocument } from "pdf-lib";
-
 import {
-  decidePtrConsensus,
+  DEFAULT_HOUSE_EXTRACTION_BUDGETS,
+  extractHouseFilings,
   extractPtrBatch,
+  extractSenatePaperReports,
+  ocrPageShortfall,
+  ocrReadsDisagreement,
   ptrContractVersion,
-  readsAgree,
+  ptrBatchIdempotencyKey,
+  readPageWithRescale,
+  responseText,
+  uprightPage,
   type CompletionClient,
-  type PtrDocumentInput,
-  type PtrDocumentResult,
+  type OcrPageRead,
+  type PlannedPtrAttachment,
   type PtrFormFamily,
+  type ReadOutcome,
+  type ReadPass,
+  type ScanPageImages,
 } from "./extraction";
 import { auditPoliticalIntegrity, type PoliticalIntegrityReport } from "./integrity";
+import { parseSlashDate } from "./lake/dates";
 import {
   houseFilingRows,
   senateElectronicFilingRows,
@@ -21,9 +30,15 @@ import {
   type SenateReportSource,
 } from "./lake/normalize";
 import type { PoliticalChamber, PoliticalFilingRow, PoliticalFilingRows } from "./lake/types";
-import type { OcrClient, OcrPageResult } from "./providers/mistralOcr";
-import { LocalCache } from "./runtime/cache";
-import { popplerDecryptPdf, popplerReadPath } from "./runtime/poppler";
+import type { OcrClient } from "./providers/mistralOcr";
+import { LocalCache, requestHash } from "./runtime/cache";
+import {
+  popplerDecryptPdf,
+  popplerReadPath,
+  popplerRenderPages,
+  rotateImage,
+  tesseractWords,
+} from "./runtime/poppler";
 import {
   fetchHouseIndexZip,
   fetchHousePtrPdf,
@@ -104,44 +119,116 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function decryptIfNeeded(pdf: Buffer): Promise<Buffer> {
-  const document = await PDFDocument.load(pdf, { ignoreEncryption: true });
-  return document.isEncrypted ? popplerDecryptPdf(pdf) : pdf;
+function truncated(payload: Record<string, unknown>): boolean {
+  const choices = Array.isArray(payload.choices) ? payload.choices : [];
+  return choices.some((choice) => choice && typeof choice === "object" &&
+    ["length", "max_tokens"].includes(String((choice as Record<string, unknown>).finish_reason)));
 }
 
-async function extractWithConsensus(
+function readRunner(completion: CompletionClient, model: string, form: PtrFormFamily) {
+  return async (requests: PlannedPtrAttachment[][], read: ReadPass): Promise<ReadOutcome[]> =>
+    Promise.all(requests.map(async (attachments): Promise<ReadOutcome> => {
+      const contentKey = ptrBatchIdempotencyKey(model, "lake", attachments, form);
+      const result = await extractPtrBatch(completion, {
+        model,
+        contract: "lake",
+        form,
+        documents: attachments,
+        idempotencyKey: `congressional-disclosures:${form}:${attachments.map((item) => item.sourceId).join(",")}:read-${read.pass}:gap-${Number(read.gap)}:${contentKey}`,
+        timeoutMs: 240_000,
+      });
+      return { attachments, result, ...(truncated(result.rawResponse) ? { truncated: true } : {}) };
+    }));
+}
+
+async function askUprightRotation(
   completion: CompletionClient,
   model: string,
-  form: PtrFormFamily,
-  document: PtrDocumentInput
-): Promise<PtrDocumentResult> {
-  const read = async (pass: number): Promise<PtrDocumentResult | undefined> => {
-    const batch = await extractPtrBatch(completion, {
+  candidates: readonly { rotation: 0 | 90 | 180 | 270; image: Buffer }[]
+): Promise<0 | 90 | 180 | 270 | null> {
+  const schema = {
+    type: "json_schema",
+    json_schema: {
+      name: "page_orientation",
+      strict: true,
+      schema: { type: "object", properties: { rotation: { type: "integer", enum: [0, 90, 180, 270] } }, required: ["rotation"], additionalProperties: false },
+    },
+  };
+  const body = {
+    model,
+    temperature: 0,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: "Each image is the same disclosure page labeled by clockwise rotation. Return the rotation whose text is upright." },
+        ...candidates.flatMap((candidate) => [
+          { type: "text", text: `rotation ${candidate.rotation}` },
+          { type: "image_url", image_url: { url: `data:image/png;base64,${candidate.image.toString("base64")}` } },
+        ]),
+      ],
+    }],
+    response_format: schema,
+  };
+  const contentKey = requestHash(model, ...candidates.map((candidate) => candidate.image));
+  const read = async (index: 1 | 2): Promise<number | null> => {
+    const { payload } = await completion.complete({
       model,
-      contract: "lake",
-      form,
-      documents: [document],
-      idempotencyKey: `congressional-disclosures:${form}:${document.sourceId}:read-${pass}`,
-      timeoutMs: 240_000,
+      body,
+      idempotencyKey: `congressional-disclosures:orientation:read-${index}:${contentKey}`,
+      timeoutMs: 120_000,
     });
-    return batch.documents.find((candidate) => candidate.sourceId === document.sourceId);
+    try {
+      const parsed: unknown = JSON.parse(responseText(payload));
+      if (!parsed || typeof parsed !== "object") return null;
+      const rotation = (parsed as Record<string, unknown>).rotation;
+      return [0, 90, 180, 270].includes(Number(rotation)) ? Number(rotation) : null;
+    } catch { return null; }
   };
-  const first = await read(1);
-  const second = await read(2);
-  if (first && readsAgree(first, second)) return first;
-  const third = await read(3);
-  return decidePtrConsensus(
-    [document.sourceId],
-    [new Map(first ? [[document.sourceId, first]] : []), new Map(second ? [[document.sourceId, second]] : []), new Map(third ? [[document.sourceId, third]] : [])]
-  )[0]?.result ?? {
-    sourceId: document.sourceId, rows: [], noTransactionsStatement: null, amendedReportDate: null,
-    amendedReportDateIso: null, nonTransactionRows: [], continuationRows: [], invalidRowIndexes: [],
-    reviewRowIndexes: [], error: "extraction returned no consensus result",
-  };
+  const [first, second] = await Promise.all([read(1), read(2)]);
+  return first !== null && first === second ? first as 0 | 90 | 180 | 270 : null;
 }
 
-async function ocrArchive(cache: LocalCache, docId: string, pages: readonly OcrPageResult[]): Promise<string> {
-  return (await cache.archive(Buffer.from(JSON.stringify(pages.map((page) => page.payload))), `ocr://${docId}`, `${docId}.ocr.json`)).rawArchiveKey;
+async function readOcrPage(
+  page: ScanPageImages,
+  label: string,
+  completion: CompletionClient,
+  ocr: OcrClient,
+  model: string,
+  dpi = 216
+): Promise<OcrPageRead> {
+  const run = async (source: { image: Buffer; checkImage: Buffer; dpi: number }) => {
+    const upright = await uprightPage(source.image, {
+      rotate: rotateImage,
+      readWords: tesseractWords,
+      askUpright: (candidates) => askUprightRotation(completion, model, candidates),
+    });
+    const checkImage = upright.rotation === 0
+      ? source.checkImage
+      : await rotateImage(source.checkImage, upright.rotation);
+    const [first, second] = await Promise.all([
+      ocr.readImage(upright.image, `${label} OCR read 1 at ${source.dpi}dpi`),
+      ocr.readImage(checkImage, `${label} OCR read 2 at check resolution`),
+    ]);
+    const shortfall = ocrPageShortfall(first.markdown, upright.scores, upright.rotation);
+    const disagreement = ocrReadsDisagreement(first.markdown, second.markdown);
+    if (shortfall || disagreement) return { upright, failure: shortfall ?? disagreement ?? "OCR rejected" };
+    return {
+      upright,
+      read: {
+        rotation: upright.rotation,
+        scores: upright.scores,
+        decidedBy: upright.decidedBy,
+        payload: first.payload,
+        checkPayload: second.payload,
+        markdown: first.markdown,
+      },
+    };
+  };
+  return readPageWithRescale({
+    source: { image: page.image, checkImage: page.checkImage, dpi },
+    ...(page.reRender ? { reRender: page.reRender } : {}),
+    readPage: run,
+  });
 }
 
 async function extractHouse(
@@ -155,22 +242,29 @@ async function extractHouse(
 ): Promise<PoliticalFilingRows> {
   const sourceUrl = housePtrPdfUrl(filing.indexYear, filing.docId);
   const source = await cache.archive(pdf, sourceUrl, `${filing.docId}.pdf`);
-  const copyable = await decryptIfNeeded(pdf);
-  const path = await popplerReadPath(copyable);
-  let ocrPages: OcrPageResult[] = [];
-  if (path === "page_image_ocr") {
-    if (!ocr) throw new Error("MISTRAL_API_KEY is required for scanned House filings");
-    ocrPages = await ocr.readPdf(copyable, `House ${filing.docId}`);
-  }
-  const result = await extractWithConsensus(completion, model, "house", {
-    sourceId: filing.docId,
-    pdf: copyable,
-    ...(ocrPages.length > 0 ? { ocrPages: ocrPages.map((page) => page.markdown), ocrWithPdf: true } : {}),
-  });
+  const run = await extractHouseFilings(
+    [{ filingId: filing.docId, pdf }],
+    {
+      readPath: popplerReadPath,
+      renderPages: popplerRenderPages,
+      ocrPage: async (page, label) => {
+        if (!ocr) throw new Error("MISTRAL_API_KEY is required for scanned House filings");
+        return readOcrPage(page, label, completion, ocr, model);
+      },
+      decrypt: popplerDecryptPdf,
+      run: readRunner(completion, model, "house"),
+    },
+    { ...DEFAULT_HOUSE_EXTRACTION_BUDGETS, ocrConcurrency: 4 },
+    2
+  );
+  const extracted = run.extractions[0];
+  if (!extracted) throw new Error(`House ${filing.docId} returned no extraction`);
   return houseFilingRows(filing, source, {
-    result, parseMethod: path === "text_layer" ? "text" : "scan", model,
+    result: extracted.result, parseMethod: extracted.parseMethod, model,
     contractVersion: ptrContractVersion("lake", "house"),
-    ocrArchiveKey: ocrPages.length > 0 ? await ocrArchive(cache, filing.docId, ocrPages) : null,
+    ocrArchiveKey: extracted.ocrPages
+      ? await cache.archive(Buffer.from(JSON.stringify(extracted.ocrPages)), `ocr://${filing.docId}`, `${filing.docId}.ocr.json`).then((item) => item.rawArchiveKey)
+      : null,
     processedAt,
   });
 }
@@ -206,19 +300,36 @@ async function extractSenate(
   if (imageUrls.length === 0) return senateFilingWithoutTrades(source, "paper", "failed", "paper report lists no page images");
   const images = await Promise.all(imageUrls.map((url) => senate.fetchMedia(url)));
   await Promise.all(images.map((image, index) => cache.archive(image, imageUrls[index] ?? sourceUrl, `${docId}-page-${index + 1}.png`)));
-  const ocrPages = await Promise.all(images.map((image, index) => ocr.readImage(image, `Senate ${docId} page ${index + 1}`)));
-  const result = await extractWithConsensus(completion, model, "senate_paper", {
-    sourceId: docId, ocrPages: ocrPages.map((page) => page.markdown), pageImages: images, ocrWithPageImages: true,
-  });
+  const run = await extractSenatePaperReports(
+    [{ reportId: docId, pages: images }],
+    {
+      ocrPage: (image, label) => readOcrPage({ image, checkImage: image }, label, completion, ocr, model),
+      uprightPageImage: async (image, rotation) => rotation === 0 ? image : rotateImage(image, rotation),
+      run: readRunner(completion, model, "senate_paper"),
+    },
+    DEFAULT_HOUSE_EXTRACTION_BUDGETS.ocrText,
+    2,
+    4
+  );
+  const extracted = run.extractions[0];
+  if (!extracted) throw new Error(`Senate ${docId} returned no extraction`);
   return senatePaperFilingRows(source, {
-    result, model, contractVersion: ptrContractVersion("lake", "senate_paper"),
-    ocrArchiveKey: await ocrArchive(cache, docId, ocrPages),
+    result: extracted.result, model, contractVersion: ptrContractVersion("lake", "senate_paper"),
+    ocrArchiveKey: extracted.ocrPages
+      ? await cache.archive(Buffer.from(JSON.stringify(extracted.ocrPages)), `ocr://${docId}`, `${docId}.ocr.json`).then((item) => item.rawArchiveKey)
+      : null,
   });
 }
 
 function years(options: SyncOptions, now: Date): number[] {
   if (options.year !== undefined) return [options.year];
   return Array.from({ length: now.getUTCFullYear() - options.sinceYear + 1 }, (_, index) => options.sinceYear + index);
+}
+
+function senateReportYear(report: SenateSearchRow): number {
+  const submitted = parseSlashDate(report.submittedDate);
+  if (!submitted) throw new Error(`Senate report ${senateReportId(report.reportPath)} has no submitted date`);
+  return Number(submitted.slice(0, 4));
 }
 
 /** Discover official filings and commit each complete filing independently for resumability. */
@@ -259,11 +370,16 @@ export async function syncPoliticalDisclosures(options: SyncOptions): Promise<Sy
         filings.push(...housePeriodicTransactionReports(await parseHouseIndexZip(year, zip)));
       }
       discovered += filings.length;
-      indexed.push(...filings.map((filing) => ({ chamber: "house" as const, docId: filing.docId })));
       const queue = filings.filter((filing) => shouldProcess({ chamber: "house", docId: filing.docId }));
       skipped += filings.length - queue.length;
       const selected = queue.slice(0, Math.max(0, max - processed));
       planned += selected.length;
+      // Audit coverage is judged against filings this run attempted or previously
+      // completed, never the unattempted tail a bound or interruption leaves behind.
+      const unattempted = new Set(queue.slice(selected.length).map((filing) => key({ chamber: "house", docId: filing.docId })));
+      indexed.push(...filings
+        .map((filing) => ({ chamber: "house" as const, docId: filing.docId }))
+        .filter((candidate) => !unattempted.has(key(candidate))));
       if (!options.dryRun && selected.length > 0 && !options.completion) throw new Error("OPENROUTER_API_KEY is required for House extraction");
       for (const filing of selected) {
         if (options.dryRun) {
@@ -293,13 +409,18 @@ export async function syncPoliticalDisclosures(options: SyncOptions): Promise<Sy
           fetchMedia: fetchSenateMedia,
         };
       })();
-      const reports = await senateSource.search(`01/01/${options.year ?? options.sinceYear}`);
+      const lastYear = options.year ?? now.getUTCFullYear();
+      const reports = (await senateSource.search(`01/01/${options.year ?? options.sinceYear}`))
+        .filter((report) => senateReportYear(report) <= lastYear);
       discovered += reports.length;
-      indexed.push(...reports.map((report) => ({ chamber: "senate" as const, docId: senateReportId(report.reportPath) })));
       const queue = reports.filter((report) => shouldProcess({ chamber: "senate", docId: senateReportId(report.reportPath) }));
       skipped += reports.length - queue.length;
       const selected = queue.slice(0, Math.max(0, max - processed));
       planned += selected.length;
+      const unattemptedSenate = new Set(queue.slice(selected.length).map((report) => key({ chamber: "senate", docId: senateReportId(report.reportPath) })));
+      indexed.push(...reports
+        .map((report) => ({ chamber: "senate" as const, docId: senateReportId(report.reportPath) }))
+        .filter((candidate) => !unattemptedSenate.has(key(candidate))));
       for (const report of selected) {
         const docId = senateReportId(report.reportPath);
         if (options.dryRun) {

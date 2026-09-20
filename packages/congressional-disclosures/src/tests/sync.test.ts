@@ -285,6 +285,34 @@ describe("syncPoliticalDisclosures", () => {
     }
   });
 
+  test("--year excludes later Senate reports returned by the start-date search", async () => {
+    const repository = new SQLitePoliticalRepository(dbPath("senate-year"));
+    const later: SenateSearchRow = {
+      ...SENATE_ROW,
+      reportPath: "/search/view/ptr/6c3f1d4b-2e5f-4a6b-8c9d-8b7e6f5a4d32/",
+      submittedDate: "01/02/2025",
+    };
+    try {
+      const summary = await syncPoliticalDisclosures({
+        repository, cache: new LocalCache(cachePath("senate-year")),
+        sinceYear: 2024, year: 2024, chamber: "senate", acceptSenateTerms: true, now: NOW,
+        sources: { senate: {
+          search: async () => [SENATE_ROW, later],
+          fetchReportHtml: async () => SENATE_HTML,
+          fetchMedia: async () => { throw new Error("unexpected media fetch"); },
+        } },
+      });
+      expect(summary.discovered).toBe(1);
+      expect(summary.succeeded).toBe(1);
+      const snapshot = await repository.snapshot();
+      expect(snapshot.filings.map((filing) => filing.docId)).toEqual([
+        "5b2f0c3a-1d4e-4f5a-9b8c-7a6d5e4f3c21",
+      ]);
+    } finally {
+      await repository.close();
+    }
+  });
+
   test("bounds one run to --max-filings", async () => {
     if (!hasPoppler) return;
     const repository = new SQLitePoliticalRepository(dbPath("max"));

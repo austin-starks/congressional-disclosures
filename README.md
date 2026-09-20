@@ -1,258 +1,201 @@
-<div align="center">
+# congressional-disclosures
 
-# Capitol Gains
+Turn official U.S. House and Senate financial disclosures into a local,
+queryable SQLite data lake.
 
-**Congressional trading disclosures, extracted at scale.**
+```bash
+export OPENROUTER_API_KEY=...  # model extraction
+export MISTRAL_API_KEY=...     # OCR for scanned filings
 
-Members of the US Congress must file a Periodic Transaction Report within 45 days of a trade.
-Those reports are public — and largely unusable: tens of thousands of PDFs, many of them
-photographs of paper, spread across two chambers with different formats and no common schema.
+npx congressional-disclosures doctor
+npx congressional-disclosures sync \
+  --db ./congress.db \
+  --since 2024 \
+  --accept-senate-terms
+npx congressional-disclosures audit --db ./congress.db
 
-Capitol Gains turns them into rows you can query.
+sqlite3 ./congress.db \
+  "SELECT filer_last, transaction_date, printed_ticker, action, amount_bracket
+   FROM political_trades
+   ORDER BY available_at DESC
+   LIMIT 10;"
+```
 
-[![npm](https://img.shields.io/npm/v/congressional-disclosures?label=congressional-disclosures)](https://www.npmjs.com/package/congressional-disclosures)
+That is the product. The package discovers filings from the official House
+Clerk and Senate eFD sites, downloads them, handles encrypted and scanned PDFs,
+runs OCR and independent model reads, reconciles disagreements, normalizes the
+rows, and writes the lake. A rerun resumes from completed filings and reuses
+content-addressed provider responses.
+
+[![npm](https://img.shields.io/npm/v/congressional-disclosures)](https://www.npmjs.com/package/congressional-disclosures)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
-[![node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](./package.json)
+[![node](https://img.shields.io/badge/node-%3E%3D22.5-brightgreen)](./package.json)
 
-![Six scenes: a trade becomes a PDF, a third of them are photographs, OCR repeats one date down 73 rows at high confidence, two reads and a reconcile, an encrypted filing whose crops come back blank, and the rows that come out](./graphic/out/architecture.gif)
+## Install
 
-<sub>From a filed PDF to a queryable row, each scene showing the failure it has to survive. Source in [`graphic/`](./graphic) — `npm run render` rebuilds it.</sub>
+You can run it without installing:
 
-</div>
+```bash
+npx congressional-disclosures --help
+```
 
----
-
-## One package, three modules
-
-| Module | What it knows |
-|---|---|
-| `src/backfill` | how to run a resumable, sharded backfill against **any** storage, model and OCR backend. Knows nothing about Congress. |
-| `src/extraction` | how to plan bounded PTR reads, prove OCR row coverage, compare independent reads, reconcile against filed pages, and merge page ranges. Vendor calls enter through two narrow ports. |
-| `src/integrity.ts` | published-table integrity checks over filing, trade, and event rows — pure functions, tested without S3 or Mongo. Knows nothing about S3 or Mongo. |
+Or add the library to an application:
 
 ```bash
 npm install congressional-disclosures
-# Until 0.2.0 is on npm, the repository root exposes the same package entrypoint:
+```
+
+Until a release is available from npm, the repository root exposes the same
+CLI and library entry points:
+
+```bash
 npm install github:austin-starks/congressional-disclosures
 ```
 
+## Requirements
+
+- Node.js 22.5 or newer (`node:sqlite` is built in).
+- Poppler: `brew install poppler` on macOS or
+  `apt-get install poppler-utils` on Debian/Ubuntu.
+- Tesseract: `brew install tesseract` on macOS or
+  `apt-get install tesseract-ocr` on Debian/Ubuntu.
+- An OpenAI-compatible completion API key. OpenRouter is the default endpoint.
+- A Mistral API key when a filing contains scanned pages.
+
+`doctor` checks the local executables and reports whether each credential is
+present without printing its value.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `doctor` | Checks Node, PDF/OCR tools, and provider configuration. |
+| `sync --db FILE --since YEAR` | Discovers, extracts, and stores filings. |
+| `status --db FILE` | Prints filing, trade, event, and failure counts. |
+| `audit --db FILE` | Runs completeness, parity, orphan, and sanity checks. |
+
+Useful sync options:
+
+```text
+--year YEAR
+--chamber house|senate|both
+--max-filings N
+--model MODEL
+--ocr-model MODEL
+--cache-dir DIR
+--dry-run
+--accept-senate-terms
+```
+
+Senate access requires `--accept-senate-terms`, acknowledging the eFD site’s
+usage agreement. `--dry-run` discovers and plans without downloading filing
+documents, calling providers, or writing lake rows.
+
+## The SQLite lake
+
+The CLI creates three public tables:
+
+- `political_filings`: every official document, provenance, parse method,
+  content hash, extraction status, and named failure reason.
+- `political_trades`: normalized transaction rows with dates, owner, action,
+  filed ticker, amount bracket, and source provenance.
+- `political_trade_events`: versioned economic events that consolidate repeated
+  and amended observations of the same trade.
+
+Private tables hold run history, schema migrations, and per-filing receipts.
+Raw documents and paid responses live in the content-addressed cache selected
+by `--cache-dir`.
+
+## Use it as a library
+
 ```ts
 import {
-  auditPoliticalIntegrity,
-  createEngineTranscriber,
-  planOcrTextRequests,
-  runMapReduceReads,
-  runRound,
+  LocalCache,
+  MistralOcrClient,
+  OpenAiCompatibleCompletionClient,
+  SQLitePoliticalRepository,
+  syncPoliticalDisclosures,
 } from "congressional-disclosures";
+
+const cache = new LocalCache("./.congressional-disclosures");
+const repository = new SQLitePoliticalRepository("./congress.db");
+
+try {
+  const summary = await syncPoliticalDisclosures({
+    repository,
+    cache,
+    completion: new OpenAiCompatibleCompletionClient({
+      apiKey: process.env.OPENROUTER_API_KEY!,
+      cache,
+    }),
+    ocr: new MistralOcrClient({
+      apiKey: process.env.MISTRAL_API_KEY!,
+      cache,
+    }),
+    sinceYear: 2024,
+    acceptSenateTerms: true,
+  });
+  console.log(summary);
+} finally {
+  await repository.close();
+}
 ```
 
-## Extract a scanned PTR
+Official-source clients, provider clients, the repository, and progress
+reporting are injectable. The default CLI supplies concrete implementations;
+applications only replace a component when they actually need to.
 
-The public extraction surface accepts a `CompletionClient` for model calls and a
-`PdfDecrypt` function before encrypted House pages are copied. OCR/rasterization stays with the
-calling application, where its native tools and credentials already live.
+## NexusTrade and other production lakes
+
+SQLite is the turnkey public path. NexusTrade keeps its existing native
+Tigris/Parquet lake by supplying its concrete `ParquetLakePort` to
+`ManifestParquetPoliticalRepository`:
 
 ```ts
 import {
-  auditPoliticalIntegrity,
-  createEngineTranscriber,
-  ocrReadsDisagreement,
-  planOcrTextRequests,
-  runMapReduceReads,
-  type CompletionClient,
+  ManifestParquetPoliticalRepository,
+  syncPoliticalDisclosures,
 } from "congressional-disclosures";
 
-const completion: CompletionClient = {
-  complete: (request) => gateway.complete(request),
-};
-const transcribe = createEngineTranscriber(completion);
-
-const pages = await Promise.all(
-  uprightPagePngs.map(async (png) => {
-    const [first, second] = await Promise.all([
-      transcribe(png, 1),
-      transcribe(png, 2),
-    ]);
-    const disagreement = ocrReadsDisagreement(first, second);
-    if (disagreement) throw new Error(disagreement);
-    return first;
-  })
-);
-
-const budget = {
-  maxTableRowsPerWindow: 40,
-  maxRowsPerWindow: 80,
-  maxTableRowsPerRequest: 80,
-  maxAttachmentsPerRequest: 4,
-};
-const requests = await planOcrTextRequests(
-  [{ filingId: "house:20025000", pages }],
-  budget
-);
-
-const extraction = await runMapReduceReads(requests, runReadRequests, budget);
-if (extraction.consensus.failed !== 0) throw new Error("filing did not reach consensus");
-
-const integrity = auditPoliticalIntegrity({
-  now: new Date(),
-  filings: publishedFilings,
-  trades: publishedTrades,
-  events: publishedEvents,
-  indexed: chamberIndex,
-  receipts: roundReceipts,
-  shardKeys: resolvedManifestKeys,
-});
-if (!integrity.passed) throw new Error(JSON.stringify(integrity.findings));
+const repository = new ManifestParquetPoliticalRepository(tigrisParquetPort);
+await syncPoliticalDisclosures({ repository, cache, completion, ocr, sinceYear: 2012 });
 ```
 
-Each engine read has a different retry-stable idempotency key: retrying read 1 replays read 1,
-while read 2 remains an independent paid call. Feed the planned attachments to
-`runMapReduceReads`; the caller-supplied runner decides how requests reach its model gateway.
-The package then proves row coverage, reads the filed pages independently, reconciles
-disagreements, and exposes `auditPoliticalIntegrity` for the published tables.
+The package owns the congressional domain: discovery, downloads, PDF handling,
+OCR validation, extraction, normalization, event construction, and integrity
+rules. NexusTrade owns its credentials, NexusGenAI transport and billing,
+Tigris/DuckDB implementation, scheduling, alerts, and application-specific
+enrichment.
 
-## No vendors in the type system
+## Reliability boundaries
 
-A backfill runs against five interfaces, and extraction adds only `CompletionClient.complete`
-and `PdfDecrypt`. Swap any adapter without touching the pipeline:
+- House PDFs are classified by actual Poppler-extracted text. Scans are
+  rendered page by page and checked at two resolutions.
+- Page orientation combines Tesseract word evidence with independent visual
+  reads when the evidence is ambiguous.
+- Model extraction uses independent, retry-stable reads. Disagreements trigger
+  reconciliation against the filed pages.
+- Commits replace one complete filing atomically. Failed filings remain named
+  and retryable instead of silently disappearing.
+- `audit` checks indexed-filing coverage, filing/trade parity, orphan rows,
+  event consistency, and field sanity.
 
-```
-DataStore       get · put · putIfAbsent · list · head · exists
-LanguageModel   complete(request)
-OcrEngine       read(pageImage, label)
-TableWriter     write(table, partition, rows)
-Clock           now()
-```
-
-`S3DataStore` covers AWS, Tigris, Cloudflare R2, Backblaze B2 and MinIO — they differ by
-`endpoint`, not by type. Credentials come from the AWS SDK's standard chain, so **no package
-here reads `process.env` and none holds a secret**.
-
-```ts
-const aws     = new S3DataStore({ bucket: "disclosures" });
-const tigris  = new S3DataStore({ bucket: "disclosures", endpoint: "https://fly.storage.tigris.dev" });
-const minio   = new S3DataStore({ bucket: "disclosures", endpoint: "http://localhost:9000" });
-```
-
-Want Postgres instead of object storage? Implement `DataStore` and `TableWriter`. The pipeline
-cannot tell the difference.
-
-## How a round works
-
-```
-        ┌──────────── list every filing the chambers publish ────────────┐
-        │                                                               │
-   shard 0/16 ─┐                                                        │
-   shard 1/16 ─┤  each machine takes the slice whose identity hashes     │
-      ...      ├─ to its index, minus whatever already has a receipt ────┤
-   shard 15/16 ┘                                                        │
-        │                                                               │
-        ▼                                                               │
-   ┌─────────────────── one pass, batchSize items ──────────────────┐   │
-   │  fetch (cache first) → OCR → read → reconcile → receipt        │   │
-   └────────────────────────────────────────────────────────────────┘   │
-        │                          repeat until nothing is pending ─────┘
-        ▼
-   reduce: read every receipt of the round, publish each year once
-```
-
-Three properties make this survivable:
-
-**Receipts key on identity, not on shard.** One object per finished filing. A machine that dies
-costs only its in-flight work, and **the shard count can change between runs** — sixteen
-machines become thirty-two and only the unfinished work is redivided.
-
-**Sharding hashes identity, never position.** A restarted machine re-lists its input, often in a
-different order. Position-based assignment would make it process a different slice: some work
-twice, the rest never.
-
-**Progress is read from the store.** Not from logs, which roll over, and not from machine state,
-which lies — a cloud provider will report a host as running long after the process inside it
-died.
-
-## Reading a filing that is a photograph
-
-Roughly a third of House PTRs are scans, and OCR on a dense table of near-identical dates is
-not merely noisy — it is *confidently* wrong. A generative OCR engine will read one date and
-repeat it down a column of seventy-three rows at 0.92–0.999 word confidence, and every
-page-level sanity check passes, because the page does keep its letters and its dated lines.
-
-So no value is taken from the OCR text alone:
-
-```
-   Read A ──── the OCR text, alone ─────────┐
-                                            ├──▶ agree?  ──▶ accept
-   Read B ──── the filed page images ───────┘      │
-                                                   └─ disagree ─▶ Read C:
-                                                      both reads, plus the
-                                                      document itself, plus
-                                                      row-level crops of the
-                                                      cells in dispute
-```
-
-The reconciling read decides from the page, not from either summary. Measured on a filing whose
-OCR gave `04/21/21` for all 73 rows: the published dates came back spread across `04/01`–`04/22`
-exactly as printed.
-
-**Those crops need a decrypted PDF.** Every electronic House PTR sampled is RC4-encrypted, and
-`pdf-lib` copies pages out of an encrypted document as blank pages without raising anything — so
-a crop, a split or a merge silently produces an empty page, and the model correctly reports no
-rows. Decrypt with PDFium first, then copy. It is the single most expensive thing to learn late
-in this pipeline.
-
-## The lease, and the trap inside it
-
-When N machines miss cache on the same expensive page, a single-flight lease makes one of them
-pay and the rest reuse the result. The happy path is easy. What matters is the owner dying.
-
-A claim is fenced the moment its paid call is dispatched — from then on the outcome is unknown
-and a blind retry may pay twice. **Fencing forever is the trap.** A successful call writes its
-result and leaves the in-flight state, so a claim still in flight, with an attempt recorded and
-a lease long expired, belongs to a process that is never coming back. Refuse to reclaim it and
-that key is poisoned permanently: every later reader fails.
-
-> Measured 2026-09-16: **613 of 703 failed filings** failed exactly this way, each one
-> re-failing on every repair run, because one shared page had been fenced by a machine that had
-> already exited. Paying twice for one page costs $0.004. Never reading it again costs every
-> filing that contains it.
-
-The backfill runtime reclaims an abandoned attempt 30 minutes past its lease — long enough that a
-live call is never stolen, short enough that a round repairs itself.
-
-## Repository layout
-
-```
-packages/congressional-disclosures/
-  src/backfill/     the framework: ports, sharding, receipts, lease, rounds, progress
-  src/extraction/   PTR planning, OCR proofs, independent reads, consensus, and merge
-  src/integrity.ts  published-table checks: completeness, parity, orphans, sanity, freshness
-  examples/         executable public-API checks against a real filed PTR
-graphic/            Remotion source for the architecture animation
-```
-
-## Development
+## Development and release evidence
 
 ```bash
 npm install
-npm run build        # every workspace
-npm test             # every workspace
 npm run typecheck
+npm test
+npm run build
+npm run smoke:fixture
+npm run smoke:live-senate -- 2024 /tmp/congressional-senate-canary
 ```
 
-Strict TypeScript everywhere: `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`.
-
-## Version history
-
-- **0.2.0** — adds the production PTR extraction pipeline: encrypted-PDF-safe request planning,
-  OCR row windows and coverage proofs, independent engine reads, source-page reconciliation,
-  bounded consensus, page orientation, and rescale fallback.
-- **0.1.0** — resumable backfill runtime and published-table integrity audit.
-
-## The data
-
-The extracted disclosures are published as a dataset rather than committed here. Filings are
-public records from the [House Clerk](https://disclosures-clerk.house.gov/) and the
-[Senate EFD](https://efdsearch.senate.gov/); this project only reads and structures them.
+The fixture smoke test runs the compiled package against a checked-in,
+encrypted real filing and scripted provider responses. Live official-source
+canaries are separate release gates; the Senate canary accepts the eFD terms,
+downloads one real electronic filing, and proves it reaches SQLite without a
+model or OCR stub.
 
 ## License
 

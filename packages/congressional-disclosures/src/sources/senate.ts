@@ -163,7 +163,7 @@ export class SenateEfdSession {
     const agreement = await fetchWithRetry(`${EFD_ORIGIN}${HOME_PATH}`, {
       method: "POST", redirect: "manual", body,
       headers: { ...this.headers(HOME_PATH), "Content-Type": "application/x-www-form-urlencoded" },
-    });
+    }, { acceptedStatuses: [302] });
     this.storeCookies(agreement);
     if (!this.cookies.has("csrftoken")) throw new Error("Senate eFD agreement did not leave a csrftoken cookie");
   }

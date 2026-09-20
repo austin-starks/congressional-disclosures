@@ -2,7 +2,7 @@
   "name": "congressional-disclosures",
   "version": "0.2.0",
   "private": true,
-  "description": "U.S. congressional trading disclosures: resumable backfills, schema-bound extraction, and published-table integrity checks.",
+  "description": "Build a queryable SQLite lake of U.S. congressional trading disclosures from official House and Senate sources.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -10,6 +10,9 @@
   },
   "main": "packages/congressional-disclosures/dist/index.js",
   "types": "packages/congressional-disclosures/dist/index.d.ts",
+  "bin": {
+    "congressional-disclosures": "packages/congressional-disclosures/dist/cli.js"
+  },
   "exports": {
     ".": {
       "types": "./packages/congressional-disclosures/dist/index.d.ts",
@@ -26,7 +29,7 @@
     "packages/*"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.5"
   },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
@@ -34,11 +37,15 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "prepare": "npm run build --workspace ./packages/congressional-disclosures",
-    "smoke:fixture": "npm run build --workspace congressional-disclosures && node packages/congressional-disclosures/examples/fixture-smoke.cjs"
+    "smoke:fixture": "npm run build --workspace congressional-disclosures && node packages/congressional-disclosures/examples/fixture-smoke.cjs",
+    "smoke:live-senate": "npm run build --workspace congressional-disclosures && node packages/congressional-disclosures/examples/live-senate-canary.cjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.716.0",
-    "pdf-lib": "^1.17.1"
+    "cheerio": "^1.2.0",
+    "jszip": "^3.10.2",
+    "pdf-lib": "^1.17.1",
+    "sharp": "^0.33.5"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",

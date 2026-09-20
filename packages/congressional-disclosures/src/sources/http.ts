@@ -2,6 +2,7 @@ export interface HttpOptions {
   timeoutMs?: number;
   retries?: number;
   headers?: Readonly<Record<string, string>>;
+  acceptedStatuses?: readonly number[];
 }
 
 export async function fetchWithRetry(url: string, init: RequestInit = {}, options: HttpOptions = {}): Promise<Response> {
@@ -14,7 +15,7 @@ export async function fetchWithRetry(url: string, init: RequestInit = {}, option
         signal: AbortSignal.timeout(options.timeoutMs ?? 120_000),
         headers: { "User-Agent": "congressional-disclosures/0.2", ...options.headers, ...init.headers },
       });
-      if (response.ok) return response;
+      if (response.ok || options.acceptedStatuses?.includes(response.status)) return response;
       if (response.status === 404 || response.status < 500 && response.status !== 429) {
         throw new Error(`${response.status} ${response.statusText} from ${url}`);
       }

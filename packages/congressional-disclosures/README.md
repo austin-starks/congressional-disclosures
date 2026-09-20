@@ -26,10 +26,13 @@ reuses every cached paid response without re-billing.
 ## Requirements
 
 - **Node.js ≥ 22.5** (uses the built-in `node:sqlite`).
-- **Poppler** (`pdftotext`, `pdftocairo`) for PDF text extraction and
+- **Poppler** (`pdftotext`, `pdftocairo`, `pdftoppm`) for PDF text extraction and
   decryption of encrypted House filings: `brew install poppler` on macOS,
   `apt-get install poppler-utils` on Debian/Ubuntu. `doctor` checks for it and
   names exactly what is missing.
+- **Tesseract** for word-level orientation checks on scanned pages:
+  `brew install tesseract` on macOS, `apt-get install tesseract-ocr` on
+  Debian/Ubuntu.
 - API keys above. House PDF extraction needs the completion key; scanned
   filings and Senate paper filings also need the OCR key.
 

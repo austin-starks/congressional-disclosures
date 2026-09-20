@@ -72,11 +72,13 @@ async function doctor(): Promise<number> {
     node: process.versions.node,
     pdftotext: await commandAvailable("pdftotext"),
     pdftocairo: await commandAvailable("pdftocairo"),
+    pdftoppm: await commandAvailable("pdftoppm"),
+    tesseract: await commandAvailable("tesseract"),
     openrouterKey: Boolean(process.env.OPENROUTER_API_KEY),
     mistralKey: Boolean(process.env.MISTRAL_API_KEY),
   };
   process.stdout.write(`${JSON.stringify(checks, null, 2)}\n`);
-  return checks.pdftotext && checks.pdftocairo ? 0 : 1;
+  return checks.pdftotext && checks.pdftocairo && checks.pdftoppm && checks.tesseract ? 0 : 1;
 }
 
 async function main(): Promise<number> {
