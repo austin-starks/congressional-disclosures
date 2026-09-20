@@ -1,0 +1,52 @@
+name: Bug report
+description: Report incorrect output, a failed filing, or a package problem.
+title: "[bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include API keys, cookies, or private source documents. Use the security policy for vulnerabilities.
+  - type: input
+    id: version
+    attributes:
+      label: Package version
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: path
+    attributes:
+      label: Product path
+      options:
+        - Public dataset download
+        - Local sync
+        - Library API
+        - Package or installation
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command or minimal code
+      description: Remove credentials and local secrets.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: Include the named filing failure, stack trace, or audit finding when available.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Node version, operating system, and relevant Poppler or Tesseract versions.

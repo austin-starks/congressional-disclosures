@@ -1,0 +1,56 @@
+name: Provider or integration request
+description: Propose a model, OCR, storage, publication, or decision integration.
+title: "[integration] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: Describe the capability before writing an adapter. New credentials must remain optional, and CI must use stubs rather than paid calls.
+  - type: input
+    id: product
+    attributes:
+      label: Provider or tool
+      placeholder: Model, OCR service, storage backend, or other integration
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What can a user do after this change that they cannot do now?
+    validations:
+      required: true
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: Proposed boundary
+      options:
+        - CompletionClient
+        - OcrClient
+        - PoliticalRepository
+        - ParquetLakePort
+        - New optional boundary
+        - Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Input and output contract
+      description: Show the smallest realistic call and result. Say how uncertainty and failures are represented.
+    validations:
+      required: true
+  - type: textarea
+    id: operations
+    attributes:
+      label: Credentials, cost, and fallback
+      description: State required keys, expected cost, caching, rate limits, and what works when the provider is unavailable.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Offline test plan
+      description: Explain the fixture and assertions that can run without a live account.
+    validations:
+      required: true

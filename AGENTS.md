@@ -119,4 +119,11 @@ The public repository root deliberately mirrors the package name, version, entry
 dependencies so `npm install github:austin-starks/congressional-disclosures` is usable. npm
 publication must still run from the package directory or with
 `npm publish --workspace congressional-disclosures`; publishing the private workspace root is not
-the release path.
+the release path. The root and workspace `*.js` / `*.d.ts` subpath files are hand-written
+forwarders for those two installation shapes. They are not generated clutter and must move with
+the corresponding `exports` entries.
+
+Before publishing, run `npm run verify:release`. It builds the package, checks version/README/export
+parity, verifies every forwarder and built entry point, and inspects the npm tarball. The GitHub
+workflow runs the same gate. npm publishing remains a deliberate maintainer action; do not add a
+registry token to CI.

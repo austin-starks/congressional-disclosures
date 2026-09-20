@@ -1,6 +1,6 @@
 {
   "name": "congressional-disclosures",
-  "version": "0.2.5",
+  "version": "1.0.0",
   "private": true,
   "description": "Build a queryable SQLite lake of U.S. congressional trading disclosures from official House and Senate sources.",
   "license": "MIT",
@@ -83,6 +83,7 @@
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
+    "verify:release": "npm run build && node scripts/verify-release-layout.mjs && node scripts/smoke-packed-install.mjs && npm pack --dry-run --cache ./.tmp/npm-cache --ignore-scripts",
     "prepare": "npm run build --workspace ./packages/congressional-disclosures",
     "smoke:fixture": "npm run build --workspace congressional-disclosures && node packages/congressional-disclosures/examples/fixture-smoke.cjs",
     "smoke:live-senate": "npm run build --workspace congressional-disclosures && node packages/congressional-disclosures/examples/live-senate-canary.cjs"

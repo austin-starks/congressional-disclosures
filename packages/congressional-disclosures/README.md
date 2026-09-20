@@ -4,6 +4,8 @@ Build a local, queryable database of U.S. congressional financial disclosures
 from the official House Clerk and Senate eFD sources.
 
 [![npm](https://img.shields.io/npm/v/congressional-disclosures)](https://www.npmjs.com/package/congressional-disclosures)
+[![CI](https://github.com/austin-starks/congressional-disclosures/actions/workflows/ci.yml/badge.svg)](https://github.com/austin-starks/congressional-disclosures/actions/workflows/ci.yml)
+[![npm downloads](https://img.shields.io/npm/dm/congressional-disclosures)](https://www.npmjs.com/package/congressional-disclosures)
 [![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/austin-starks/congressional-disclosures/blob/main/LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D22.5-brightgreen)](https://nodejs.org/)
 
@@ -62,6 +64,11 @@ npx congressional-disclosures download --out ./data/congressional-trades
 The download contains Parquet files plus `snapshot.json`. All three public
 tables include `sourceUrl`, which links each filing, printed transaction, or
 reconciled event back to the official House or Senate record.
+
+The hosted snapshot has a target refresh interval of 20 hours. That is an
+operating target, not a guarantee: an upstream outage or failed audit can delay
+publication. Read `generatedAt` in the downloaded `snapshot.json` when freshness
+matters; it records the snapshot you actually received.
 
 ## Build a SQLite lake
 
@@ -195,6 +202,20 @@ For a realistic backtest or alert, never make a trade visible before its public
 availability timestamp. Later corrections are visible only from their own
 `available_at` timestamp until `superseded_at`.
 
+### Ticker handling
+
+The package does not guess a missing ticker from an asset description.
+`printed_ticker` contains only the symbol printed on the disclosure. When a
+filing prints a ticker, `resolution_status` is `printed`; when it does not,
+`resolution_status` is `unresolved`, `resolved_ticker` stays null, and
+`resolution_reason` explains why.
+
+`resolved_ticker` is reserved for an application that deliberately adds a
+resolver. That resolver may use an exchange directory, issuer identifiers, or
+manual review, but it must preserve the printed value and record its status and
+reason. This keeps an inferred symbol from being presented as something the
+member filed.
+
 ## Commands
 
 | Command | What it does |
@@ -269,6 +290,18 @@ Focused entry points—`/extraction`, `/lake`, `/sources`, `/backfill`,
 `/integrity`, and `/storage`—let a server import the congressional domain
 without loading the SQLite runtime.
 
+## Version 1 stability
+
+The CLI command names, documented flags, SQLite table grains, and published
+JavaScript entry points are covered by SemVer starting with 1.0. A breaking
+change to one of those contracts requires a new major version. New columns,
+new optional flags, extraction improvements, and additional audit findings may
+ship in minor releases when existing callers keep working.
+
+Official sites and provider responses can change independently of this package.
+The live canaries detect that drift; they are evidence about the current source
+path, not a substitute for deterministic tests.
+
 ## Production Parquet lakes
 
 SQLite is the turnkey local path. A production application can retain its own
@@ -330,6 +363,7 @@ npm install
 npm run typecheck
 npm test
 npm run build
+npm run verify:release
 npm run smoke:fixture
 npm run smoke:live-senate -- 2024 /tmp/congressional-senate-canary
 ```
@@ -337,6 +371,17 @@ npm run smoke:live-senate -- 2024 /tmp/congressional-senate-canary
 The fixture smoke test runs the compiled package against a checked-in encrypted
 filing with scripted provider responses. It proves packaging and deterministic
 pipeline behavior; live official-source canaries are separate release gates.
+
+## Contributing
+
+Found a bad filing result or a package defect? Use the
+[bug-report form](https://github.com/austin-starks/congressional-disclosures/issues/new?template=bug_report.yml)
+and include the package version, exact command, public document id or URL, and
+the named failure. For a new model, OCR, storage, or decision integration, read
+[CONTRIBUTING.md](https://github.com/austin-starks/congressional-disclosures/blob/main/CONTRIBUTING.md)
+before writing an adapter; it maps proposals to the package's actual extension
+points and explains the offline-test requirement. Security reports follow
+[SECURITY.md](https://github.com/austin-starks/congressional-disclosures/blob/main/SECURITY.md).
 
 ## License
 
