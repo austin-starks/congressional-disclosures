@@ -9,6 +9,12 @@ from the official House Clerk and Senate eFD sources.
 [![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/austin-starks/congressional-disclosures/blob/main/LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D22.5-brightgreen)](https://nodejs.org/)
 
+<p align="center">
+  <a href="#get-a-queryable-sqlite-database">
+    <img src="https://nexustrade-prod.nyc3.cdn.digitaloceanspaces.com/open-source/congressional-disclosures/readme-demo-4077a627280f.gif" alt="Download the audited congressional disclosure dataset and create a queryable SQLite database with one command" width="100%" />
+  </a>
+</p>
+
 The package discovers filings, downloads their original documents, decrypts
 House PDFs, OCRs scans, extracts transactions with independent model reads,
 reconciles disagreements, and writes a resumable SQLite data lake. It covers
