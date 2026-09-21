@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0 - 2026-09-21
+
+- Scanned filings are now checked for dates that cannot all be true. A read that dates a transaction after the report was filed, puts a transaction or notification more than a month out of order, or dates a transaction more than a year before its notification sends that page to its reconciling read, with each finding stated. Before, both reads of a scan could share one misread digit and nothing disputed it: a handwritten 6/1/23 was published as 2013-06-01.
+- Two reads must now agree on the notification date as well as the transaction date. A typed 03/22/22 misread as 09/22/22 on ten rows previously passed because no check compared notification dates.
+- Added `filedOn` (YYYY-MM-DD) to `HouseFilingPdf`, `SenatePaperReportPages` and `OcrTextFiling`; `sync` passes the House filing date and the Senate submission date. Without it, only a row's own dates are checked.
+- A page sent to reconcile only by a date finding keeps its agreeing reads if the reconciling read fails, so the new check never fails a filing that previously extracted.
+- Exported `ptrRowDateFindings`, `describePtrRow`, `LONG_BEFORE_NOTIFICATION_DAYS` and `DATE_ORDER_TOLERANCE_DAYS`.
+
 ## 1.1.1 - 2026-09-20
 
 - Added a short hosted quick-start demo showing the one-command SQLite path.
