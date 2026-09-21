@@ -20,6 +20,8 @@ export interface OcrTextFiling {
   pages: readonly string[];
   /** The filing as filed, for its source reads and reconciling reads. */
   source?: FiledSource;
+  /** The day the report was filed, YYYY-MM-DD, for the date findings of its reads (`ptrDateChecks.ts`). */
+  filedOn?: string;
 }
 
 /**
@@ -225,7 +227,10 @@ function filingAttachments(filing: OcrTextFiling, budget: OcrTextBudget): Weight
   );
   const tableRowsIn = (window: PtrRowWindow): number =>
     numbered.tableRows.slice(window.first - 1, window.last).filter(Boolean).length;
-  const filed = filing.source ? { filedSource: filing.source } : {};
+  const filed = {
+    ...(filing.source ? { filedSource: filing.source } : {}),
+    ...(filing.filedOn ? { filedOn: filing.filedOn } : {}),
+  };
   // A filing goes whole when it has at most one window and its pages fit one request's images.
   if (windows.length === 0 || (windows.length === 1 && (maxPages === undefined || total <= maxPages))) {
     return [
@@ -445,7 +450,8 @@ export async function planSourceReadRequests(
  */
 export async function planReconcileAttachment(
   window: PlannedPtrAttachment,
-  priorReads: readonly PtrPriorRead[]
+  priorReads: readonly PtrPriorRead[],
+  dateFindings: readonly string[] = []
 ): Promise<PlannedPtrAttachment> {
   const source = window.filedSource;
   if (!source) throw new Error(`${window.sourceId} has no filed pages to reconcile against`);
@@ -464,5 +470,6 @@ export async function planReconcileAttachment(
     ...(source.kind === "pdf" ? { ocrWithPdf: true } : { ocrWithPageImages: !dropPageImages }),
     ...(evidenceImages.length > 0 ? { evidenceImages } : {}),
     priorReads,
+    ...(dateFindings.length > 0 ? { dateFindings } : {}),
   };
 }

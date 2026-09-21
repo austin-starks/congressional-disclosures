@@ -87,6 +87,8 @@ export interface HouseFilingPdf {
   pdf: Buffer;
   /** Rows this filing is expected to hold, so requests are packed by answer length. */
   estimatedRows?: number;
+  /** The day the report was filed, YYYY-MM-DD; a scan's read dated after it is disputed (`ptrDateChecks.ts`). */
+  filedOn?: string;
 }
 
 export interface HouseFilingExtraction {
@@ -272,6 +274,7 @@ export async function extractHouseFilings(
             {
               filingId: filing.filingId,
               pages: pages.map((page) => page.markdown),
+              ...(filing.filedOn ? { filedOn: filing.filedOn } : {}),
               source: {
                 kind: "pdf",
                 pdf: filing.pdf,

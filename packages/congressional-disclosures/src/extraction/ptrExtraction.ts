@@ -193,6 +193,10 @@ const RECONCILE_INSTRUCTIONS = `
 - Settle from the filed pages which rows are transactions and how rows group into transactions.
 - When the filed pages hold no transaction table at all — a cover notice stating the filer has nothing to report, for example — return an empty rows array and copy that statement into no_transactions_statement, exactly as a first read would. An empty rows array with a null statement fails the filing, so a page that lists transactions never takes this path.`;
 
+/** Only a request whose sources carry date findings gets this, so every other read keeps contract v11's text. */
+const DATE_FINDINGS_INSTRUCTIONS = `
+- Some sources come with date findings: a date a prior read gave that cannot be true alongside the other dates of its row or of the report, such as a transaction dated after the day the report was filed, a transaction or notification a month out of order, or a transaction more than a year before its notification. Such a date is usually a misread digit, and both reads can share the misread: a handwritten 6/1/23 whose 2 ran into the slash was read as 6/1/13 by both, beside a notification date of 7/3/23. Read every date a finding names again from the filed pages and crops, digit by digit, comparing each handwritten digit with the same digit written elsewhere on the form. A finding does not make a date wrong: filers misdate forms, and a date the page plainly prints stays as printed.`;
+
 const PAGE_RANGE_INSTRUCTIONS = `
 - Some attachments are a page range of a longer filing; the source mapping lists their pages. For those, return only the rows printed on those pages and an empty rows array when those pages print no transaction row. A row that starts on the last page of a range belongs to that range.`;
 
@@ -291,6 +295,8 @@ export interface PtrDocumentInput {
   evidenceImages?: Buffer[];
   /** Both map reads of this source, sent after its OCR text and filed pages for a reconciling read. */
   priorReads?: readonly PtrPriorRead[];
+  /** Dates the prior reads gave that cannot all be true (`ptrDateChecks.ts`), stated to the reconciling read. */
+  dateFindings?: readonly string[];
 }
 
 /** An earlier read of a source, shown to a reconciling read under `label`. */
@@ -433,6 +439,7 @@ export interface PtrSourceForms {
   ocrRowWindows?: boolean;
   ocrWithPdf?: boolean;
   priorReads?: boolean;
+  dateFindings?: boolean;
 }
 
 export function ptrExtractionInstructions(
@@ -451,6 +458,7 @@ export function ptrExtractionInstructions(
     `${sources.ocrRowWindows ? OCR_ROW_INSTRUCTIONS : ""}` +
     `${sources.ocrWithPdf && !sources.priorReads ? OCR_WITH_PDF_INSTRUCTIONS : ""}` +
     `${sources.priorReads ? RECONCILE_INSTRUCTIONS : ""}` +
+    `${sources.priorReads && sources.dateFindings ? DATE_FINDINGS_INSTRUCTIONS : ""}` +
     `${contract === "lake" ? lake : ""}` +
     `\n- Use null only for a genuinely absent optional field, never to avoid reading a visible value.\n\n` +
     `Return one JSON object with a documents array. Include every mapped source_id exactly once, with its no_transactions_statement, amended_report_date, amended_report_date_iso, non_transaction_rows, continuation_rows, and rows. ` +
@@ -522,6 +530,7 @@ export function buildPtrExtractionBody(
       (document) => document.ocrPages && document.ocrWithPdf
     ),
     priorReads: documents.some((document) => (document.priorReads?.length ?? 0) > 0),
+    dateFindings: documents.some((document) => (document.dateFindings?.length ?? 0) > 0),
   };
   const content: Array<Record<string, unknown>> = [
     {
@@ -589,6 +598,16 @@ export function buildPtrExtractionBody(
             type: "text",
             text: `source_id ${document.sourceId}, ${prior.label}:\n${JSON.stringify(priorReadJson(prior.result))}`,
           })),
+          ...(document.dateFindings?.length
+            ? [
+                {
+                  type: "text",
+                  text: `source_id ${document.sourceId}, date findings:\n${document.dateFindings
+                    .map((finding) => `- ${finding}`)
+                    .join("\n")}`,
+                },
+              ]
+            : []),
         ];
       }
       if (!document.pageImages) return [pdfPart()];
@@ -1003,6 +1022,7 @@ export function ptrBatchIdempotencyKey(
     if (document.priorReads?.length) {
       hash.update(JSON.stringify(document.priorReads.map((prior) => [prior.label, priorReadJson(prior.result)])));
     }
+    if (document.dateFindings?.length) hash.update(JSON.stringify(["date-findings", document.dateFindings]));
   }
   return `ptr-extraction-${hash.digest("hex")}`;
 }

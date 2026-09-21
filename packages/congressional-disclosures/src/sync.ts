@@ -242,8 +242,9 @@ async function extractHouse(
 ): Promise<PoliticalFilingRows> {
   const sourceUrl = housePtrPdfUrl(filing.indexYear, filing.docId);
   const source = await cache.archive(pdf, sourceUrl, `${filing.docId}.pdf`);
+  const filedOn = parseSlashDate(filing.filingDate);
   const run = await extractHouseFilings(
-    [{ filingId: filing.docId, pdf }],
+    [{ filingId: filing.docId, pdf, ...(filedOn ? { filedOn } : {}) }],
     {
       readPath: popplerReadPath,
       renderPages: popplerRenderPages,
@@ -300,8 +301,9 @@ async function extractSenate(
   if (imageUrls.length === 0) return senateFilingWithoutTrades(source, "paper", "failed", "paper report lists no page images");
   const images = await Promise.all(imageUrls.map((url) => senate.fetchMedia(url)));
   await Promise.all(images.map((image, index) => cache.archive(image, imageUrls[index] ?? sourceUrl, `${docId}-page-${index + 1}.png`)));
+  const submittedOn = parseSlashDate(report.submittedDate);
   const run = await extractSenatePaperReports(
-    [{ reportId: docId, pages: images }],
+    [{ reportId: docId, pages: images, ...(submittedOn ? { filedOn: submittedOn } : {}) }],
     {
       ocrPage: (image, label) => readOcrPage({ image, checkImage: image }, label, completion, ocr, model),
       uprightPageImage: async (image, rotation) => rotation === 0 ? image : rotateImage(image, rotation),

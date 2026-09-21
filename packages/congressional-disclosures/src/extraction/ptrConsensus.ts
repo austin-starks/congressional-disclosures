@@ -35,6 +35,7 @@ function text(value: unknown): string | null {
 export const PTR_ROW_SIGNATURE_FIELDS = [
   "transaction_type_code",
   "transaction_date_iso",
+  "notification_date_iso",
   "amount_low",
   "amount_high",
   "ticker",
@@ -52,6 +53,7 @@ export function ptrRowSignatureFields(row: Record<string, unknown>): unknown[] {
   return [
     text(row.transaction_type_code),
     isIsoCalendarDate(row.transaction_date_iso) ? row.transaction_date_iso : null,
+    isIsoCalendarDate(row.notification_date_iso) ? row.notification_date_iso : null,
     typeof row.amount_low === "number" ? row.amount_low : null,
     typeof row.amount_high === "number" ? row.amount_high : null,
     text(row.ticker),

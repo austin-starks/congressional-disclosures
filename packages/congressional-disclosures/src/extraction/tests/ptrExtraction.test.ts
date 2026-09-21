@@ -318,6 +318,47 @@ describe("ptrExtraction", () => {
       ).toThrow("short has 1 page images for 2 OCR pages");
     });
 
+    it("states date findings to a reconciling read and adds their instruction only when a source carries them", () => {
+      const read = {
+        sourceId: "report",
+        rows: [],
+        noTransactionsStatement: null,
+        amendedReportDate: null,
+        amendedReportDateIso: null,
+        nonTransactionRows: [],
+        continuationRows: [],
+        invalidRowIndexes: [],
+        reviewRowIndexes: [],
+        error: null,
+      };
+      const reconcile = (dateFindings?: readonly string[]) =>
+        buildPtrExtractionBody("openai/gpt-5.6-luna", "lake", [
+          {
+            sourceId: "report",
+            ocrPages: ["page one"],
+            priorReads: [
+              { label: "Read A", result: read },
+              { label: "Read B", result: read },
+            ],
+            ...(dateFindings ? { dateFindings } : {}),
+          },
+        ]);
+      const parts = (body: Record<string, unknown>) =>
+        (body.messages as Array<Record<string, unknown>>)[1]!.content as Array<Record<string, unknown>>;
+      const plain = parts(reconcile());
+      const finding = "Read A, the row labeled 3: transaction date 2013-06-01 is more than a year before its notification date 2023-07-03";
+      const found = parts(reconcile([finding]));
+      // Contract v11's wording moves rows when it changes, so a read without findings keeps it exactly.
+      const plainText = String(plain[0]!.text);
+      const foundText = String(found[0]!.text);
+      const bullet = foundText.indexOf("\n- Some sources come with date findings");
+      expect(plainText).not.toContain("date findings");
+      expect(bullet).toBeGreaterThan(0);
+      expect(foundText.slice(0, bullet) + foundText.slice(foundText.indexOf("\n- ", bullet + 1))).toBe(plainText);
+      expect(found.at(-1)!.text).toBe(`source_id report, date findings:\n- ${finding}`);
+      expect(plain.some((part) => String(part.text ?? "").includes("date findings:"))).toBe(false);
+    });
+
     it("licenses a reconciling read to answer no-transactions on a cover notice", () => {
       const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
       const read = {

@@ -60,6 +60,8 @@ export interface PtrAttachmentMeta {
   /** The numbered OCR rows this attachment accounts for. */
   rowWindow?: PtrRowWindow;
   pages?: PtrPageRange;
+  /** The day the report was filed, YYYY-MM-DD; a read date after it is a date finding (`ptrDateChecks.ts`). */
+  filedOn?: string;
 }
 
 export interface PlannedPtrAttachment extends PtrAttachmentMeta, PtrDocumentInput {

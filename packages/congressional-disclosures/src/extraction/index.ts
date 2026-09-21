@@ -17,6 +17,7 @@ export * from "./ocrPageRescale";
 export * from "./pageOrientation";
 export * from "./ptrRowCoverage";
 export * from "./ptrConsensus";
+export * from "./ptrDateChecks";
 export * from "./ptrGapFill";
 export * from "./ptrExtraction";
 export * from "./ptrReadPasses";

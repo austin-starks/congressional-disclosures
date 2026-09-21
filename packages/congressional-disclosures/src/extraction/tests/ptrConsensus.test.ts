@@ -40,6 +40,10 @@ describe("ptrConsensus", () => {
     const base = ptrDocumentSignature(read("a", [row()]));
     expect(ptrDocumentSignature(read("a", [row({ asset_description: "MICR0SOFT", transaction_date: "10/05/2020" })]))).toBe(base);
     expect(ptrDocumentSignature(read("a", [row({ transaction_date_iso: "2020-10-15" })]))).not.toBe(base);
+    // A notification misread no read disagreed on reached the lake: 03/22/22 as 09/22/22 (Harshbarger 8218621).
+    expect(ptrDocumentSignature(read("a", [row({ notification_date_iso: "2022-09-22" })]))).not.toBe(
+      ptrDocumentSignature(read("a", [row({ notification_date_iso: "2022-03-22" })]))
+    );
     expect(ptrDocumentSignature(read("a", [row({ transaction_type_code: "S" })]))).not.toBe(base);
     expect(ptrDocumentSignature(read("a", [row({ amount_low: 15001, amount_high: 50000 })]))).not.toBe(base);
     expect(ptrDocumentSignature(read("a", [row({ ocr_rows: [5] })]))).not.toBe(base);

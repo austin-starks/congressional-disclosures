@@ -38,6 +38,8 @@ export interface SenatePaperReportPages {
   reportId: string;
   /** Filed page images in page order, as fetched. */
   pages: readonly Buffer[];
+  /** The day the report was submitted, YYYY-MM-DD; a read dated after it is disputed (`ptrDateChecks.ts`). */
+  filedOn?: string;
 }
 
 export interface SenatePaperExtractionDeps {
@@ -99,6 +101,7 @@ export async function extractSenatePaperReports(
             {
               filingId: report.reportId,
               pages: scan.map((page) => page.markdown),
+              ...(report.filedOn ? { filedOn: report.filedOn } : {}),
               source: {
                 kind: "images",
                 filed: report.pages,

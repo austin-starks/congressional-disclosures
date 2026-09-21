@@ -16,6 +16,7 @@ import {
   pageReadsAgree,
   type PtrConsensusDecision,
 } from "./ptrConsensus";
+import { describePtrRow, ptrRowDateFindings } from "./ptrDateChecks";
 import type { PtrBatchResult, PtrDocumentResult, PtrPriorRead, PtrRowWindow } from "./ptrExtraction";
 import { gapFillRanges, mergeGapFills } from "./ptrGapFill";
 import type { PlannedPtrAttachment, PtrAttachmentMeta } from "./ptrRequestPlan";
@@ -327,6 +328,46 @@ function disputedPages(
   return disputed;
 }
 
+/**
+ * Date findings (`ptrDateChecks.ts`) of both map reads, by `pageKey`: Read A's transactions on the page they start on,
+ * and every transaction Read B lists for the page. A page with one is disputed even where the reads agree, since both
+ * can share a misread digit, and each finding is stated to the reconciling read of every window on that page.
+ */
+function dateFindingsByPage(
+  windows: readonly PlannedPtrAttachment[],
+  textReads: ReadonlyMap<string, PtrDocumentResult>,
+  sourceReads: ReadonlyMap<string, PtrDocumentResult>
+): Map<string, string[]> {
+  const findings = new Map<string, string[]>();
+  const add = (key: string, finding: string): void => {
+    const list = findings.get(key) ?? [];
+    if (!list.includes(finding)) findings.set(key, [...list, finding]);
+  };
+  for (const window of windows) {
+    const filedOn = window.filedOn ?? null;
+    const text = textReads.get(window.sourceId);
+    for (const row of text && !text.error ? text.rows : []) {
+      const page = window.numberedOcr?.rowPages[firstCitedRow(row) - 1];
+      if (page === undefined) continue;
+      for (const finding of ptrRowDateFindings(row, filedOn)) {
+        add(pageKey(window.filingId, page), `${MAP_READ_LABELS.text}, ${describePtrRow(row)}: ${finding}`);
+      }
+    }
+    for (const page of windowRowPages(window)) {
+      const source = sourceReads.get(sourceReadId(window.filingId, page));
+      for (const row of source && !source.error ? source.rows : []) {
+        for (const finding of ptrRowDateFindings(row, filedOn)) {
+          add(
+            pageKey(window.filingId, page),
+            `${MAP_READ_LABELS.source}, ${describePtrRow({ ...row, page })}: ${finding}`
+          );
+        }
+      }
+    }
+  }
+  return findings;
+}
+
 /** Read B as a window's reconciling read sees it: every transaction listed on the pages its rows sit on, by page. */
 function sourceReadOfWindow(
   window: PlannedPtrAttachment,
@@ -360,9 +401,10 @@ function sourceReadOfWindow(
 
 /**
  * Map-reduce reads of OCR text windows. Read A takes the OCR text and Read B the filed page
- * alone, so their errors are unrelated and show as page-level disagreement. A window whose
- * pages all agree is accepted; any other gets one reconciling read with both reads and the
- * filed pages, which must still pass row coverage or the window fails for a later retry.
+ * alone, so their errors are mostly unrelated and show as page-level disagreement. A window whose
+ * pages all agree and give no date finding is accepted; any other gets one reconciling read with
+ * both reads, the filed pages and its date findings, which must still pass row coverage or the
+ * window fails for a later retry.
  */
 export async function runMapReduceReads(
   requests: PlannedPtrAttachment[][],
@@ -380,9 +422,18 @@ export async function runMapReduceReads(
   const windows = requests.flat();
   const textReads = readsOf(textRead.outcomes);
   const sourceReads = readsOf(sourceOutcomes);
-  const disputed = disputedPages(windows, textReads, sourceReads);
+  const disagreed = disputedPages(windows, textReads, sourceReads);
+  const dateFindings = dateFindingsByPage(windows, textReads, sourceReads);
+  const disputed = new Set([...disagreed, ...dateFindings.keys()]);
   const reconciling = windows.filter((window) =>
     windowRowPages(window).some((page) => disputed.has(pageKey(window.filingId, page)))
+  );
+  // Windows whose map reads agree on every page, sent to reconcile only by a date finding. Before date findings
+  // existed they were accepted as read, so a reconciling read that fails leaves them as read rather than failing them.
+  const dateOnly = new Set(
+    reconciling
+      .filter((window) => windowRowPages(window).every((page) => !disagreed.has(pageKey(window.filingId, page))))
+      .map((window) => window.sourceId)
   );
   const planningErrors = new Map<string, string>();
   const reconcileAttachments = (
@@ -393,7 +444,10 @@ export async function runMapReduceReads(
           ...(text ? [{ label: MAP_READ_LABELS.text, result: text }] : []),
           { label: MAP_READ_LABELS.source, result: sourceReadOfWindow(window, sourceReads) },
         ];
-        return planReconcileAttachment(window, priorReads).catch((error: unknown) => {
+        const findings = [
+          ...new Set(windowRowPages(window).flatMap((page) => dateFindings.get(pageKey(window.filingId, page)) ?? [])),
+        ];
+        return planReconcileAttachment(window, priorReads, findings).catch((error: unknown) => {
           const reason = error instanceof Error ? error.message : String(error);
           planningErrors.set(window.sourceId, unreadable.get(window.filingId) ?? reason);
           return null;
@@ -416,6 +470,7 @@ export async function runMapReduceReads(
     if (text && !reconcilingIds.has(id)) return { id, outcome: "agreed", result: text };
     const result = reconciled.get(id);
     if (result && !result.error) return { id, outcome: "arbitrated", result };
+    if (text && !text.error && dateOnly.has(id)) return { id, outcome: "agreed", result: text };
     const reason = planningErrors.get(id) ?? result?.error ?? "the reconciling read returned no answer";
     return { id, outcome: "failed", result: failedPtrResult(id, `map reads disagreed and reconciling failed: ${reason}`) };
   });

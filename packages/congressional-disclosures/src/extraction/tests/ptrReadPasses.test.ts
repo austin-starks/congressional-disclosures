@@ -233,6 +233,90 @@ describe("ptrReadPasses", () => {
     expect(agreed.consensus).toMatchObject({ agreed: 1, arbitrated: 0, failed: 0, laterReads: 0 });
   });
 
+  it("reconciles a page both map reads agree on when a date cannot be true, and states why", async () => {
+    // Kelly 8219843: OCR read a handwritten 6/1/23 as 6/1/13, the filed page read agreed, and nothing disputed a
+    // transaction ten years before the notification date printed beside it.
+    const planned = (): PlannedPtrAttachment[][] =>
+      planOcrTextRequests(
+        [
+          {
+            filingId: "f",
+            pages: [PAGE],
+            filedOn: "2023-07-18",
+            source: { kind: "images", filed: [Buffer.from("page-1")], rotations: [0], geometries: [null], upright: async (image) => image },
+          },
+        ],
+        { ...BUDGET, maxPagesPerRequest: 10 }
+      );
+    const dated = (code: string, ocrRows: number[], transactionIso: string): Record<string, unknown> => ({
+      ...transaction(code, ocrRows),
+      transaction_date_iso: transactionIso,
+      notification_date_iso: "2023-07-03",
+    });
+    const findings: Array<readonly string[]> = [];
+    const answer = (_sourceId: string, read: ReadPass): Answer => {
+      if (read.pass === 2) return { rows: [dated("S", [], "2013-06-01"), dated("S", [], "2023-06-02")], nonTransactionRows: [] };
+      const first = read.pass === 3 ? "2023-06-01" : "2013-06-01";
+      return { rows: [dated("S", [3], first), dated("S", [4], "2023-06-02")], nonTransactionRows: [1, 2, 5] };
+    };
+    const run: RunReadRequests = async (requests, read) => {
+      for (const attachment of requests.flat()) {
+        if (read.pass === 3) findings.push(attachment.dateFindings ?? []);
+      }
+      return fakeRun(answer, [])(requests, read);
+    };
+
+    const { outcomes, consensus } = await runMapReduceReads(planned(), run, BUDGET);
+    expect(findings).toEqual([
+      [
+        `${MAP_READ_LABELS.text}, the row labeled 3: transaction date 2013-06-01 is more than a year before its notification date 2023-07-03`,
+        `${MAP_READ_LABELS.source}, a row on page 1 (Asset): transaction date 2013-06-01 is more than a year before its notification date 2023-07-03`,
+      ],
+    ]);
+    expect(consensus).toMatchObject({ agreed: 0, arbitrated: 1, failed: 0 });
+    expect(outcomes[0]!.result?.documents[0]!.rows.map((row) => row.transaction_date_iso)).toEqual([
+      "2023-06-01",
+      "2023-06-02",
+    ]);
+  });
+
+  it("keeps agreeing map reads when the reconciling read a date finding asked for fails, and fails a real disagreement", async () => {
+    const planned = (): PlannedPtrAttachment[][] =>
+      planOcrTextRequests(
+        [
+          {
+            filingId: "f",
+            pages: [PAGE],
+            filedOn: "2014-09-12",
+            source: { kind: "images", filed: [Buffer.from("page-1")], rotations: [0], geometries: [null], upright: async (image) => image },
+          },
+        ],
+        { ...BUDGET, maxPagesPerRequest: 10 }
+      );
+    // Rogers 8216588 types a notification of 08/29/20 on a 2014 report: a finding every read shares, printed that way.
+    const typo = (code: string, ocrRows: number[], transactionIso: string): Record<string, unknown> => ({
+      ...transaction(code, ocrRows),
+      transaction_date_iso: transactionIso,
+      notification_date_iso: "2020-08-29",
+    });
+    const answer = (sourceB: string) => (_sourceId: string, read: ReadPass): Answer => {
+      if (read.pass === 2) return { rows: [typo("P", [], "2014-08-12"), typo("P", [], sourceB)], nonTransactionRows: [] };
+      return { rows: [typo("P", [3], "2014-08-12"), typo("P", [4], "2014-08-26")], nonTransactionRows: [1, 2, 5] };
+    };
+    const failingReconcile = (sourceB: string): RunReadRequests => async (requests, read) =>
+      read.pass === 3 ? [] : fakeRun(answer(sourceB), [])(requests, read);
+
+    const kept = await runMapReduceReads(planned(), failingReconcile("2014-08-26"), BUDGET);
+    expect(kept.consensus).toMatchObject({ agreed: 1, arbitrated: 0, failed: 0 });
+    expect(kept.outcomes[0]!.result?.documents[0]!.rows.map((row) => row.transaction_date_iso)).toEqual([
+      "2014-08-12",
+      "2014-08-26",
+    ]);
+
+    const failed = await runMapReduceReads(planned(), failingReconcile("2014-06-26"), BUDGET);
+    expect(failed.consensus).toMatchObject({ agreed: 0, arbitrated: 0, failed: 1 });
+  });
+
   it("returns a single read without consensus", async () => {
     const calls: string[] = [];
     const run = fakeRun(() => ({ rows: [transaction("P", [3]), transaction("S", [4])], nonTransactionRows: [1, 2, 5] }), calls);
