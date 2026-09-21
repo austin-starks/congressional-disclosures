@@ -15,9 +15,10 @@ reconciles disagreements, and writes a resumable SQLite data lake. It covers
 both the House and Senate and retains source URLs, document hashes, extraction
 status, repeated reports, and amendment history.
 
-- **Want the data immediately?** Run `npx congressional-disclosures download`.
+- **Want the data immediately?** Run `npx congressional-disclosures@latest download --sqlite`.
   It downloads the current audited [Congressional Stock Trades dataset](https://huggingface.co/datasets/austin-starks/congressional-stock-trades)
-  from Hugging Face without model or OCR credentials.
+  from Hugging Face and creates a ready-to-query SQLite database without model
+  or OCR credentials.
 - **Want your own local lake?** Run the CLI against the official sources.
 - **Building another product?** Install the library and replace only the model,
   OCR, cache, or storage adapters you need to own.
@@ -39,12 +40,65 @@ explicit return horizon, weighting method, and decision about whether returns
 begin on the transaction date or the public disclosure date. The lake preserves
 both dates so that analysis can state that choice instead of hiding it.
 
-## Download the audited public dataset
+## Get a queryable SQLite database
 
-For the fastest path to the data, download the published Parquet snapshot:
+This is the shortest path from nothing to SQL:
 
 ```bash
-npx congressional-disclosures download
+npx congressional-disclosures@latest download --sqlite
+```
+
+That one command downloads the checksum-verified Parquet snapshot and creates:
+
+```text
+./congressional-stock-trades/congressional-disclosures.sqlite
+```
+
+No Docker, Python, DuckDB, API keys, OCR tools, or paid model calls are needed.
+The CLI checks disk space separately for the compressed download and for the
+larger SQLite database before it starts either stage.
+
+Confirm the database works without writing any SQL:
+
+```bash
+npx congressional-disclosures@latest status \
+  --db ./congressional-stock-trades/congressional-disclosures.sqlite
+```
+
+Then run a real query. This example shows the latest currently active Nancy
+Pelosi events in the snapshot:
+
+```bash
+sqlite3 -header -column \
+  ./congressional-stock-trades/congressional-disclosures.sqlite \
+  "SELECT ticker, action, amount_low, amount_high, first_available_at
+   FROM political_trade_events
+   WHERE filer_last = 'Pelosi' AND superseded_at IS NULL
+   ORDER BY first_available_at DESC
+   LIMIT 10;"
+```
+
+Choose another database path when needed:
+
+```bash
+npx congressional-disclosures@latest download --sqlite ./data/congress.sqlite
+```
+
+Export any query to CSV with SQLite itself:
+
+```bash
+sqlite3 -header -csv \
+  ./congressional-stock-trades/congressional-disclosures.sqlite \
+  "SELECT * FROM political_trade_events WHERE superseded_at IS NULL;" \
+  > congressional-trade-events.csv
+```
+
+## Download Parquet only
+
+If your tool already reads Parquet, omit `--sqlite`:
+
+```bash
+npx congressional-disclosures@latest download
 ```
 
 The default destination is `./congressional-stock-trades`. Before downloading,
@@ -70,11 +124,15 @@ operating target, not a guarantee: an upstream outage or failed audit can delay
 publication. Read `generatedAt` in the downloaded `snapshot.json` when freshness
 matters; it records the snapshot you actually received.
 
-## Build a SQLite lake
+## Rebuild the lake from official sources
 
 ### 1. Check the machine
 
-Node.js 22.5 or newer is required. Install Poppler and Tesseract first:
+The one-command public snapshot above does not need this setup. Use this section
+only when you want to discover and extract the official filings yourself.
+
+Node.js 22.5 or newer is required. Use a stable Node release rather than an
+alpha or nightly build. Install Poppler and Tesseract first:
 
 ```bash
 # macOS
@@ -221,7 +279,7 @@ member filed.
 | Command | What it does |
 |---|---|
 | `doctor` | Checks Node, PDF/OCR tools, and provider configuration. |
-| `download` | Downloads and verifies the audited public Parquet snapshot from Hugging Face. |
+| `download` | Downloads and verifies the audited public snapshot; add `--sqlite [FILE]` to create a queryable database. |
 | `sync --db FILE --since YEAR` | Discovers, extracts, and stores filings. |
 | `status --db FILE` | Prints filing, trade, event, and failure counts. |
 | `audit --db FILE` | Runs orphan, event, amount, date, freshness, and sanity checks. |

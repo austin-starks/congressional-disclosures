@@ -3,7 +3,13 @@
 import { resolve } from "node:path";
 
 import { LocalCache } from "./runtime/cache";
-import { downloadCongressionalDataset, type DatasetDownloadPlan } from "./dataset";
+import {
+  downloadCongressionalDataset,
+  datasetSqlitePlan,
+  materializeCongressionalDatasetSqlite,
+  type DatasetDownloadPlan,
+  type DatasetSqlitePlan,
+} from "./dataset";
 import { isHelpRequest } from "./cliArgs";
 import { commandAvailable } from "./runtime/poppler";
 import { MistralOcrClient } from "./providers/mistralOcr";
@@ -56,6 +62,7 @@ Download options:
   --out DIR                      Default: ./congressional-stock-trades
   --table NAME                   Download one table only
   --year YEAR                    Download one published year only
+  --sqlite [FILE]                Also create queryable SQLite (default: OUT/congressional-disclosures.sqlite)
 
 Sync options:
   --cache-dir DIR                Raw documents and paid response cache
@@ -104,6 +111,13 @@ function printDownloadPlan(plan: DatasetDownloadPlan): void {
   );
 }
 
+function printSqlitePlan(plan: DatasetSqlitePlan): void {
+  process.stderr.write(
+    `SQLite disk check: up to ${gigabytes(plan.estimatedBytes)} GB (${megabytes(plan.estimatedBytes)} MB) ` +
+    `estimated; ${gigabytes(plan.availableBytes)} GB free at ${plan.database}.\n`,
+  );
+}
+
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
   if (isHelpRequest(args)) {
@@ -116,11 +130,39 @@ async function main(): Promise<number> {
   if (command === "download") {
     const year = numberFlag(flags, "year");
     const table = textFlag(flags, "table");
+    const sqliteFlag = flags.get("sqlite");
+    if (sqliteFlag !== undefined && (table !== undefined || year !== undefined)) {
+      throw new Error("--sqlite requires the complete dataset; remove --table and --year");
+    }
+    const destination = resolve(textFlag(flags, "out", "./congressional-stock-trades") ?? "./congressional-stock-trades");
+    const sqlitePath = sqliteFlag === undefined
+      ? undefined
+      : sqliteFlag === true
+        ? resolve(destination, "congressional-disclosures.sqlite")
+        : resolve(sqliteFlag);
     const result = await downloadCongressionalDataset({
-      destination: resolve(textFlag(flags, "out", "./congressional-stock-trades") ?? "./congressional-stock-trades"),
+      destination,
       ...(table ? { table } : {}),
       ...(year !== undefined ? { year } : {}),
+      ...(sqlitePath ? {
+        onSnapshot: async (snapshot) => {
+          const plan = await datasetSqlitePlan(sqlitePath, snapshot);
+          printSqlitePlan(plan);
+          if (!plan.enoughSpace) {
+            throw new Error(
+              `Insufficient disk space for SQLite: ${gigabytes(plan.estimatedBytes)} GB estimated, ` +
+              `${gigabytes(plan.availableBytes)} GB available`,
+            );
+          }
+        },
+      } : {}),
       onPlan: printDownloadPlan,
+      onProgress: (message) => process.stderr.write(`${message}\n`),
+    });
+    const sqlite = sqliteFlag === undefined ? undefined : await materializeCongressionalDatasetSqlite({
+      datasetDirectory: destination,
+      databasePath: sqlitePath ?? resolve(destination, "congressional-disclosures.sqlite"),
+      snapshot: result.snapshot,
       onProgress: (message) => process.stderr.write(`${message}\n`),
     });
     process.stdout.write(`${JSON.stringify({
@@ -130,6 +172,7 @@ async function main(): Promise<number> {
       downloadedFiles: result.downloadedFiles,
       reusedFiles: result.reusedFiles,
       downloadedBytes: result.bytes,
+      ...(sqlite ? { sqlite } : {}),
     }, null, 2)}\n`);
     return 0;
   }
@@ -138,13 +181,10 @@ async function main(): Promise<number> {
   const repository = new SQLitePoliticalRepository(dbPath);
   try {
     if (command === "status") {
-      const snapshot = await repository.snapshot();
+      const counts = await repository.counts();
       process.stdout.write(`${JSON.stringify({
         database: dbPath,
-        filings: snapshot.filings.length,
-        trades: snapshot.trades.length,
-        events: snapshot.events.length,
-        failedFilings: snapshot.filings.filter((row) => row.extractionStatus === "failed").length,
+        ...counts,
       }, null, 2)}\n`);
       return 0;
     }

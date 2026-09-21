@@ -178,6 +178,38 @@ export class SQLitePoliticalRepository implements PoliticalRepository {
     };
   }
 
+  async counts(): Promise<{ filings: number; trades: number; events: number; failedFilings: number }> {
+    const count = (table: string): number => {
+      const row = rowObject(this.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get());
+      return Number(row.count);
+    };
+    return {
+      filings: count("political_filings"),
+      trades: count("political_trades"),
+      events: count("political_trade_events"),
+      failedFilings: Number(rowObject(this.db.prepare(
+        "SELECT COUNT(*) AS count FROM political_filings WHERE extraction_status = 'failed'",
+      ).get()).count),
+    };
+  }
+
+  async replaceSnapshot(snapshot: PoliticalLakeSnapshot): Promise<void> {
+    const insertFiling = this.db.prepare(`INSERT INTO political_filings (${FILING_COLUMNS}) VALUES ${placeholders(23)}`);
+    const insertTrade = this.db.prepare(`INSERT INTO political_trades (${TRADE_COLUMNS}) VALUES ${placeholders(33)}`);
+    const insertEvent = this.db.prepare(`INSERT INTO political_trade_events (${EVENT_COLUMNS}) VALUES ${placeholders(24)}`);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.exec("DELETE FROM political_trade_events; DELETE FROM political_trades; DELETE FROM political_filings;");
+      for (const filing of snapshot.filings) insertFiling.run(...filingValues(filing));
+      for (const trade of snapshot.trades) insertTrade.run(...tradeValues(trade));
+      for (const event of snapshot.events) insertEvent.run(...eventValues(event));
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   async replaceFilings(updates: readonly PoliticalFilingRows[], runId: string): Promise<void> {
     if (updates.length === 0) return;
     const insertFiling = this.db.prepare(`INSERT INTO political_filings (${FILING_COLUMNS}) VALUES ${placeholders(23)}`);
@@ -217,5 +249,9 @@ export class SQLitePoliticalRepository implements PoliticalRepository {
     );
   }
 
-  async close(): Promise<void> { this.db.close(); }
+  async close(): Promise<void> {
+    this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    this.db.exec("PRAGMA journal_mode = DELETE");
+    this.db.close();
+  }
 }

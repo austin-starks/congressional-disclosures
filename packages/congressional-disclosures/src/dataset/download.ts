@@ -58,6 +58,7 @@ export interface DownloadCongressionalDatasetOptions {
   year?: number;
   revision?: string;
   fetcher?: (url: string) => Promise<DownloadResponse>;
+  onSnapshot?: (snapshot: CongressionalDatasetSnapshot) => void | Promise<void>;
   onPlan?: (plan: DatasetDownloadPlan) => void;
   onProgress?: (message: string) => void;
 }
@@ -213,6 +214,7 @@ export async function downloadCongressionalDataset(
   if (snapshot.dataset !== PUBLIC_CONGRESSIONAL_DATASET) {
     throw new Error(`Unexpected dataset ${snapshot.dataset}; expected ${PUBLIC_CONGRESSIONAL_DATASET}`);
   }
+  await options.onSnapshot?.(snapshot);
   const files = selectFiles(snapshot, options.table, options.year);
   const plan = datasetDownloadPlan(destination, files, await availableBytes(destination));
   options.onPlan?.(plan);

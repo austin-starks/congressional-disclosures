@@ -34,11 +34,13 @@ have one method. The default CLI supplies concrete implementations; custom appli
 only the boundaries they need. Resist adding a method for a caller that does not exist yet.
 
 **Keep download and rebuild as distinct product paths.** `download` fetches the already-audited
-public Parquet snapshot without provider keys. `sync` discovers official filings and builds or
-refreshes SQLite. The downloader must calculate required bytes from `snapshot.json`, compare them
-with free space on the destination filesystem before fetching data files, print both values in GB,
-reject unsafe manifest paths, and verify every file's declared size and SHA-256 before publishing
-the local snapshot marker.
+public Parquet snapshot without provider keys and may materialize that same snapshot to SQLite with
+`--sqlite`; it does not re-extract filings. `sync` discovers official filings and builds or refreshes
+SQLite from the primary sources. The downloader must calculate required bytes from `snapshot.json`,
+compare them with free space on the destination filesystem before fetching data files, print both
+values in GB, reject unsafe manifest paths, and verify every file's declared size and SHA-256 before
+publishing the local snapshot marker. SQLite materialization must run its own expansion-aware disk
+preflight and validate all three table counts before replacing the destination database.
 
 **Strict TypeScript, and no `any`.** `strict`, `noUncheckedIndexedAccess` and
 `exactOptionalPropertyTypes` are all on. When a type fights you, the type is usually right.
