@@ -15,6 +15,13 @@ from the official House Clerk and Senate eFD sources.
   </a>
 </p>
 
+**This is the open-source congressional data engine behind
+[NexusTrade](https://nexustrade.io).** The package gives you the audited files,
+the extraction pipeline, and a local database you control. NexusTrade adds
+market data, natural-language research, stock screening, backtesting, portfolio
+generation, optimization, and deployment on top of the same congressional
+tables.
+
 The package discovers filings, downloads their original documents, decrypts
 House PDFs, OCRs scans, extracts transactions with independent model reads,
 reconciles disagreements, and writes a resumable SQLite data lake. It covers
@@ -63,6 +70,23 @@ That one command downloads the checksum-verified Parquet snapshot and creates:
 No Docker, Python, DuckDB, API keys, OCR tools, or paid model calls are needed.
 The CLI checks disk space separately for the compressed download and for the
 larger SQLite database before it starts either stage.
+
+### How can `npx` do all of that?
+
+`npx` asks npm for the published `congressional-disclosures` package, caches it,
+and runs the package's CLI without making you clone this repository or install
+anything globally. The `download --sqlite` command then:
+
+1. Reads `snapshot.json` from the public Hugging Face dataset.
+2. Calculates the required download and SQLite space before writing data.
+3. Downloads the published Parquet files, checking every byte count and SHA-256.
+4. Reuses files that are already present and still match their checksum.
+5. Builds a temporary SQLite database, verifies all three table counts, and only
+   then moves the finished database into place.
+
+It downloads the already-built public snapshot. It does **not** rerun OCR or
+model extraction on your laptop. Use `sync` when you deliberately want to
+rebuild the lake from the official House and Senate sources yourself.
 
 Confirm the database works without writing any SQL:
 
@@ -393,6 +417,19 @@ The package owns discovery, downloads, PDF handling, OCR validation, extraction,
 normalization, event construction, and integrity rules. The host application
 keeps its credentials, billing, physical Parquet implementation, scheduling,
 alerts, and application-specific enrichment.
+
+## Analyze the data in NexusTrade
+
+Use this repository when you want the raw dataset, a local SQLite database, or
+the extraction code itself. Use [NexusTrade](https://nexustrade.io) when you
+want the application layer: ask questions about politicians and securities,
+combine disclosures with price history, screen stocks, generate competing
+politician-driven portfolios, backtest them, optimize them, and deploy the one
+you choose.
+
+NexusTrade runs this package in production. The open-source release is not a
+toy export or a separate parser—it is the congressional disclosure engine the
+product consumes.
 
 ## Reliability and limitations
 
