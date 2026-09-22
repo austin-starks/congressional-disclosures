@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0 - 2026-09-22
+
+- A scanned filing about to fail for a row with no asset name gets one repair read of that window, told which rows the reads left blank. Filers often mark a repeated asset with a ditto mark, "same", or an arrow drawn down the asset column instead of writing it again; both reads left those rows blank, and the whole filing failed (House 9108075 lost a DJIA option sale under a ditto mark, 8217760 its NetApp rows under an arrow).
+- A scanned filing where no read found a transaction or a statement that it has none gets one repair read, told so. An amendment or letter that corrects an earlier report without listing a transaction of its own, such as one correcting a checked box or withdrawing a reported sale, now records what it corrects in `no_transactions_statement` instead of failing (House 9107269, 8214458).
+- Repair reads run only for a filing that would otherwise fail, so every read of a filing that extracts today keeps contract v11's text and its rows cannot move.
+- A partial mark on a purchase is kept as filed. Some attached statements have a "Partial Transaction" column that filers mark on purchases, and the row check rejected those rows, failing all 40 pages of House 9116142.
+- The second OCR engine tries a failed transcription under up to two more request keys. A gateway answers a key whose request failed, including one whose client disconnected mid-read, with that same failure on every later call, so one upstream timeout had failed a page for good (House 8216921).
+- Added `assetFindings` and `emptyReadFindings` to `PtrDocumentInput`, `EMPTY_READ_FINDING`, `ENGINE_READ_GENERATIONS` (3), and a `generation` argument to `engineIdempotencyKey`; the first generation's key is unchanged.
+
 ## 1.2.0 - 2026-09-21
 
 - Scanned filings are now checked for dates that cannot all be true. A read that dates a transaction after the report was filed, puts a transaction or notification more than a month out of order, or dates a transaction more than a year before its notification sends that page to its reconciling read, with each finding stated. Before, both reads of a scan could share one misread digit and nothing disputed it: a handwritten 6/1/23 was published as 2013-06-01.
