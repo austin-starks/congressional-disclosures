@@ -451,7 +451,8 @@ export async function planSourceReadRequests(
 export async function planReconcileAttachment(
   window: PlannedPtrAttachment,
   priorReads: readonly PtrPriorRead[],
-  dateFindings: readonly string[] = []
+  dateFindings: readonly string[] = [],
+  repair: { assetFindings?: readonly string[]; emptyReadFindings?: readonly string[] } = {}
 ): Promise<PlannedPtrAttachment> {
   const source = window.filedSource;
   if (!source) throw new Error(`${window.sourceId} has no filed pages to reconcile against`);
@@ -471,5 +472,7 @@ export async function planReconcileAttachment(
     ...(evidenceImages.length > 0 ? { evidenceImages } : {}),
     priorReads,
     ...(dateFindings.length > 0 ? { dateFindings } : {}),
+    ...(repair.assetFindings?.length ? { assetFindings: repair.assetFindings } : {}),
+    ...(repair.emptyReadFindings?.length ? { emptyReadFindings: repair.emptyReadFindings } : {}),
   };
 }

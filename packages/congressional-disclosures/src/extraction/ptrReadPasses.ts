@@ -399,12 +399,78 @@ function sourceReadOfWindow(
   };
 }
 
+/** A row the lake refuses for having no asset name. */
+function missingAsset(row: Record<string, unknown>): boolean {
+  return typeof row.asset_description !== "string" || row.asset_description.trim() === "";
+}
+
+/** No transaction and no statement that there is none, which fails a filing. */
+function emptyRead(result: PtrDocumentResult | undefined): boolean {
+  return result !== undefined && result.rows.length === 0 && !result.noTransactionsStatement;
+}
+
+interface RepairFindings {
+  assetFindings: string[];
+  emptyReadFindings: string[];
+}
+
+export const EMPTY_READ_FINDING = "No read of this report found a transaction or a statement that it has none.";
+
+/**
+ * Findings for each window whose decided read would fail its filing for a reason a second look at the filed pages can
+ * settle, by source id. Rows without an asset name: filers mark a repeated asset with a ditto mark or an arrow down the
+ * column (house:9108075, 8217760). A filing where no window found a transaction or a statement that there is none: an
+ * amendment letter that corrects a checked box or withdraws a transaction lists none (house:9107269, 8214458). Only
+ * these windows are read again, so no window of a filing that passes today is re-read.
+ */
+function repairFindingsOf(
+  windows: readonly PlannedPtrAttachment[],
+  decisions: readonly PtrConsensusDecision[],
+  reconciled: ReadonlyMap<string, PtrDocumentResult>
+): Map<string, RepairFindings> {
+  const decided = new Map(decisions.map((decision) => [decision.id, decision]));
+  const findings = new Map<string, RepairFindings>();
+  for (const window of windows) {
+    const decision = decided.get(window.sourceId);
+    if (!decision || decision.outcome === "failed") continue;
+    const assetFindings = decision.result.rows
+      .filter(missingAsset)
+      .map((row) => `${describePtrRow(row)} has no asset name`);
+    if (assetFindings.length > 0) findings.set(window.sourceId, { assetFindings, emptyReadFindings: [] });
+  }
+  const byFiling = new Map<string, PlannedPtrAttachment[]>();
+  for (const window of windows) byFiling.set(window.filingId, [...(byFiling.get(window.filingId) ?? []), window]);
+  for (const group of byFiling.values()) {
+    const empty = group.every((window) => {
+      const decision = decided.get(window.sourceId);
+      if (!decision) return false;
+      // A failed window counts only when its reconciling read also found nothing, never for a failed page read.
+      return decision.outcome === "failed"
+        ? emptyRead(reconciled.get(window.sourceId))
+        : !decision.result.error && emptyRead(decision.result);
+    });
+    if (!empty) continue;
+    for (const window of group) {
+      findings.set(window.sourceId, { assetFindings: [], emptyReadFindings: [EMPTY_READ_FINDING] });
+    }
+  }
+  return findings;
+}
+
+/** A repair read settles its window only when it clears the finding that sent it; otherwise the decision stands. */
+function repairSettles(findings: RepairFindings, result: PtrDocumentResult | undefined): result is PtrDocumentResult {
+  if (!result || result.error) return false;
+  if (findings.assetFindings.length > 0 && result.rows.some(missingAsset)) return false;
+  return true;
+}
+
 /**
  * Map-reduce reads of OCR text windows. Read A takes the OCR text and Read B the filed page
  * alone, so their errors are mostly unrelated and show as page-level disagreement. A window whose
  * pages all agree and give no date finding is accepted; any other gets one reconciling read with
  * both reads, the filed pages and its date findings, which must still pass row coverage or the
- * window fails for a later retry.
+ * window fails for a later retry. A window whose decided read would still fail its filing for a missing asset name or
+ * an empty report gets one repair read with that finding (`repairFindingsOf`).
  */
 export async function runMapReduceReads(
   requests: PlannedPtrAttachment[][],
@@ -474,11 +540,39 @@ export async function runMapReduceReads(
     const reason = planningErrors.get(id) ?? result?.error ?? "the reconciling read returned no answer";
     return { id, outcome: "failed", result: failedPtrResult(id, `map reads disagreed and reconciling failed: ${reason}`) };
   });
+  const repairs = repairFindingsOf(windows, decisions, reconciled);
+  const repairAttachments = (
+    await Promise.all(
+      windows
+        .filter((window) => repairs.has(window.sourceId))
+        .map((window) => {
+          const text = textReads.get(window.sourceId);
+          const priorReads: PtrPriorRead[] = [
+            ...(text ? [{ label: MAP_READ_LABELS.text, result: text }] : []),
+            { label: MAP_READ_LABELS.source, result: sourceReadOfWindow(window, sourceReads) },
+          ];
+          return planReconcileAttachment(window, priorReads, [], repairs.get(window.sourceId)).catch(() => null);
+        })
+    )
+  ).flatMap((attachment) => (attachment ? [attachment] : []));
+  const repairOutcomes =
+    repairAttachments.length === 0
+      ? []
+      : await run(
+          repairAttachments.map((attachment) => [attachment]),
+          { pass: 4, gap: false }
+        );
+  const repaired = readsOf(repairOutcomes);
+  const finalDecisions = decisions.map((decision): PtrConsensusDecision => {
+    const findings = repairs.get(decision.id);
+    const result = repaired.get(decision.id);
+    return findings && repairSettles(findings, result) ? { id: decision.id, outcome: "arbitrated", result } : decision;
+  });
   return decidedReads(
     textRead.outcomes,
-    decisions,
-    [...textRead.outcomes, ...sourceOutcomes, ...reconcileOutcomes],
-    reconcileOutcomes.reduce((total, outcome) => total + outcome.attachments.length, 0),
+    finalDecisions,
+    [...textRead.outcomes, ...sourceOutcomes, ...reconcileOutcomes, ...repairOutcomes],
+    [...reconcileOutcomes, ...repairOutcomes].reduce((total, outcome) => total + outcome.attachments.length, 0),
     textRead.gapOutcomes
   );
 }

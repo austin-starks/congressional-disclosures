@@ -1,5 +1,6 @@
 import {
   createEngineTranscriber,
+  engineIdempotencyKey,
   enginePayload,
   readPageWithEngineFallback,
   type EngineFallbackConfig,
@@ -81,6 +82,38 @@ describe("readPageWithEngineFallback", () => {
     expect(firstKeys).toHaveLength(2);
     expect(firstKeys[0]).not.toBe(firstKeys[1]);
     expect(keys[2]).toBe(firstKeys[0]);
+  });
+
+  it("tries a failed engine read once more under a new key, keeping the first key as before", async () => {
+    // house:8216921: read 2 failed once on an upstream idle timeout, and the gateway then refused that key for good.
+    const keys: string[] = [];
+    const client: CompletionClient = {
+      complete: async (request) => {
+        keys.push(request.idempotencyKey ?? "");
+        if (keys.length === 1) throw new Error("previously failed; refusing to dispatch another physical request");
+        return {
+          payload: { choices: [{ message: { content: "transcription" } }] },
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        };
+      },
+    };
+
+    await expect(createEngineTranscriber(client)(PNG, 2)).resolves.toBe("transcription");
+    expect(keys).toEqual([engineIdempotencyKey(PNG, 2), engineIdempotencyKey(PNG, 2, undefined, 2)]);
+    expect(keys[0]).toMatch(/^ptr-engine-ocr-v2-r2-[0-9a-f]{24}$/);
+    expect(keys[1]).toMatch(/^ptr-engine-ocr-v2-r2-g2-[0-9a-f]{24}$/);
+  });
+
+  it("gives up after its second key, naming both failures", async () => {
+    let calls = 0;
+    const client: CompletionClient = {
+      complete: async () => {
+        calls += 1;
+        throw new Error(`attempt ${calls} failed`);
+      },
+    };
+    await expect(createEngineTranscriber(client)(PNG, 1)).rejects.toThrow("attempt 1 failed; then attempt 2 failed");
+    expect(calls).toBe(2);
   });
 
   it("returns the Mistral read without consulting the engine when the ladder succeeds", async () => {

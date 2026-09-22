@@ -357,6 +357,32 @@ describe("ptrExtraction", () => {
       expect(foundText.slice(0, bullet) + foundText.slice(foundText.indexOf("\n- ", bullet + 1))).toBe(plainText);
       expect(found.at(-1)!.text).toBe(`source_id report, date findings:\n- ${finding}`);
       expect(plain.some((part) => String(part.text ?? "").includes("date findings:"))).toBe(false);
+
+      // A repair read's findings add their own instruction and part; the rest of the text is unchanged.
+      for (const [field, heading, instruction] of [
+        ["assetFindings", "asset findings", "\n- Some sources come with asset findings"],
+        ["emptyReadFindings", "empty-read findings", "\n- Some sources come with an empty-read finding"],
+      ] as const) {
+        const repair = parts(
+          buildPtrExtractionBody("openai/gpt-5.6-luna", "lake", [
+            {
+              sourceId: "report",
+              ocrPages: ["page one"],
+              priorReads: [
+                { label: "Read A", result: read },
+                { label: "Read B", result: read },
+              ],
+              [field]: ["the row labeled 4 has no asset name"],
+            },
+          ])
+        );
+        const repairText = String(repair[0]!.text);
+        const start = repairText.indexOf(instruction);
+        expect(start).toBeGreaterThan(0);
+        expect(plainText).not.toContain(instruction.trim());
+        expect(repairText.slice(0, start) + repairText.slice(repairText.indexOf("\n- ", start + 1))).toBe(plainText);
+        expect(repair.at(-1)!.text).toBe(`source_id report, ${heading}:\n- the row labeled 4 has no asset name`);
+      }
     });
 
     it("licenses a reconciling read to answer no-transactions on a cover notice", () => {
@@ -423,12 +449,13 @@ describe("ptrExtraction", () => {
       expect(isValidPtrRow(validRow({ ...exactCategory, amount_bracket: "$1,000", amount_exact: 1000 }))).toBe(false);
     });
 
-    it("requires a known owner and a partial sale only on a sale", () => {
+    it("requires a known owner and a boolean partial mark, kept on whatever type the filer marked it", () => {
       expect(isValidPtrRow(validRow({ owner: "not_indicated", partial_sale: false }))).toBe(true);
       expect(isValidPtrRow(validRow({ owner: "SP" }))).toBe(false);
       expect(isValidPtrRow(validRow({ partial_sale: "yes" }))).toBe(false);
-      expect(isValidPtrRow(validRow({ partial_sale: true }))).toBe(false);
       expect(isValidPtrRow(validRow({ transaction_type_code: "S", partial_sale: true }))).toBe(true);
+      // Khanna's attached statements (house:9116142) mark a Partial Transaction column on purchases.
+      expect(isValidPtrRow(validRow({ transaction_type_code: "P", partial_sale: true }))).toBe(true);
     });
 
     it("requires a real ISO calendar date or null, and integer OCR row citations", () => {

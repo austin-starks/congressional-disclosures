@@ -197,6 +197,16 @@ const RECONCILE_INSTRUCTIONS = `
 const DATE_FINDINGS_INSTRUCTIONS = `
 - Some sources come with date findings: a date a prior read gave that cannot be true alongside the other dates of its row or of the report, such as a transaction dated after the day the report was filed, a transaction or notification a month out of order, or a transaction more than a year before its notification. Such a date is usually a misread digit, and both reads can share the misread: a handwritten 6/1/23 whose 2 ran into the slash was read as 6/1/13 by both, beside a notification date of 7/3/23. Read every date a finding names again from the filed pages and crops, digit by digit, comparing each handwritten digit with the same digit written elsewhere on the form. A finding does not make a date wrong: filers misdate forms, and a date the page plainly prints stays as printed.`;
 
+/**
+ * Only a repair read gets these (`ptrReadPasses.ts`): a window whose decided read would fail its filing for one of
+ * these reasons is read again with the finding, so every read of a filing that passes keeps contract v11's text.
+ */
+const ASSET_FINDINGS_INSTRUCTIONS = `
+- Some sources come with asset findings: a transaction a prior read gave with no asset name, which fails the filing. Filers often mark a row's asset as the same as the row above instead of writing it again: a ditto mark (" or 〃), a word such as "same" or "do.", an arrow or line drawn down the asset column, or an asset cell left blank on a row that has its own type, date or amount. Read each such row's asset cell again from the filed pages and crops. When it repeats the asset above, asset_description is that asset's name as printed above.`;
+
+const EMPTY_READ_FINDINGS_INSTRUCTIONS = `
+- Some sources come with an empty-read finding: no read of this report found a transaction or a statement that it has none, which fails the filing. Read the filed pages again. When they hold transactions, return them. When they hold none, such as a notice that the filer has nothing to report, or an amendment or letter that corrects an earlier report without listing a transaction of its own (one that corrects a checked box, or withdraws a transaction the earlier report listed), return an empty rows array and copy the sentence that says so, or that states what the amendment corrects, into no_transactions_statement.`;
+
 const PAGE_RANGE_INSTRUCTIONS = `
 - Some attachments are a page range of a longer filing; the source mapping lists their pages. For those, return only the rows printed on those pages and an empty rows array when those pages print no transaction row. A row that starts on the last page of a range belongs to that range.`;
 
@@ -297,6 +307,10 @@ export interface PtrDocumentInput {
   priorReads?: readonly PtrPriorRead[];
   /** Dates the prior reads gave that cannot all be true (`ptrDateChecks.ts`), stated to the reconciling read. */
   dateFindings?: readonly string[];
+  /** Transactions the decided read gave without an asset name, stated to a repair read. */
+  assetFindings?: readonly string[];
+  /** That no read of the report found a transaction or a no-transactions statement, stated to a repair read. */
+  emptyReadFindings?: readonly string[];
 }
 
 /** An earlier read of a source, shown to a reconciling read under `label`. */
@@ -440,6 +454,8 @@ export interface PtrSourceForms {
   ocrWithPdf?: boolean;
   priorReads?: boolean;
   dateFindings?: boolean;
+  assetFindings?: boolean;
+  emptyReadFindings?: boolean;
 }
 
 export function ptrExtractionInstructions(
@@ -459,11 +475,23 @@ export function ptrExtractionInstructions(
     `${sources.ocrWithPdf && !sources.priorReads ? OCR_WITH_PDF_INSTRUCTIONS : ""}` +
     `${sources.priorReads ? RECONCILE_INSTRUCTIONS : ""}` +
     `${sources.priorReads && sources.dateFindings ? DATE_FINDINGS_INSTRUCTIONS : ""}` +
+    `${sources.priorReads && sources.assetFindings ? ASSET_FINDINGS_INSTRUCTIONS : ""}` +
+    `${sources.priorReads && sources.emptyReadFindings ? EMPTY_READ_FINDINGS_INSTRUCTIONS : ""}` +
     `${contract === "lake" ? lake : ""}` +
     `\n- Use null only for a genuinely absent optional field, never to avoid reading a visible value.\n\n` +
     `Return one JSON object with a documents array. Include every mapped source_id exactly once, with its no_transactions_statement, amended_report_date, amended_report_date_iso, non_transaction_rows, continuation_rows, and rows. ` +
     `Every row must contain exactly: ${fields}.`
   );
+}
+
+/** A findings list as one prompt part after a source's prior reads; none when the list is empty. */
+function findingsPart(
+  sourceId: string,
+  heading: string,
+  findings: readonly string[] | undefined
+): Array<Record<string, unknown>> {
+  if (!findings?.length) return [];
+  return [{ type: "text", text: `source_id ${sourceId}, ${heading}:\n${findings.map((finding) => `- ${finding}`).join("\n")}` }];
 }
 
 /** An earlier read as the model returned it, with the reason it failed its own checks when it did. */
@@ -531,6 +559,8 @@ export function buildPtrExtractionBody(
     ),
     priorReads: documents.some((document) => (document.priorReads?.length ?? 0) > 0),
     dateFindings: documents.some((document) => (document.dateFindings?.length ?? 0) > 0),
+    assetFindings: documents.some((document) => (document.assetFindings?.length ?? 0) > 0),
+    emptyReadFindings: documents.some((document) => (document.emptyReadFindings?.length ?? 0) > 0),
   };
   const content: Array<Record<string, unknown>> = [
     {
@@ -598,16 +628,9 @@ export function buildPtrExtractionBody(
             type: "text",
             text: `source_id ${document.sourceId}, ${prior.label}:\n${JSON.stringify(priorReadJson(prior.result))}`,
           })),
-          ...(document.dateFindings?.length
-            ? [
-                {
-                  type: "text",
-                  text: `source_id ${document.sourceId}, date findings:\n${document.dateFindings
-                    .map((finding) => `- ${finding}`)
-                    .join("\n")}`,
-                },
-              ]
-            : []),
+          ...findingsPart(document.sourceId, "date findings", document.dateFindings),
+          ...findingsPart(document.sourceId, "asset findings", document.assetFindings),
+          ...findingsPart(document.sourceId, "empty-read findings", document.emptyReadFindings),
         ];
       }
       if (!document.pageImages) return [pdfPart()];
@@ -729,9 +752,6 @@ export function ptrRowInvalidReason(row: Record<string, unknown>): string | null
   if ("partial_sale" in row) {
     if (typeof row.partial_sale !== "boolean") {
       return `partial_sale ${showRowValue(row.partial_sale)} is not a boolean`;
-    }
-    if (row.partial_sale && code !== "S") {
-      return `partial_sale is true on a ${showRowValue(code)} row`;
     }
   }
   const ticker = row.ticker;
@@ -1023,6 +1043,10 @@ export function ptrBatchIdempotencyKey(
       hash.update(JSON.stringify(document.priorReads.map((prior) => [prior.label, priorReadJson(prior.result)])));
     }
     if (document.dateFindings?.length) hash.update(JSON.stringify(["date-findings", document.dateFindings]));
+    if (document.assetFindings?.length) hash.update(JSON.stringify(["asset-findings", document.assetFindings]));
+    if (document.emptyReadFindings?.length) {
+      hash.update(JSON.stringify(["empty-read-findings", document.emptyReadFindings]));
+    }
   }
   return `ptr-extraction-${hash.digest("hex")}`;
 }

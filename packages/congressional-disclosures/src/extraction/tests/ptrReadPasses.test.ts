@@ -1,6 +1,7 @@
 import { planOcrTextRequests } from "../ocrTextPlan";
 import { parsePtrExtractionResponse, ptrSourceExpectations, type PtrBatchResult } from "../ptrExtraction";
 import {
+  EMPTY_READ_FINDING,
   MAP_READ_LABELS,
   runExtractionReads,
   runMapReduceReads,
@@ -26,6 +27,7 @@ const BUDGET = { maxTableRowsPerWindow: 20, maxRowsPerWindow: 120, maxTableRowsP
 interface Answer {
   rows: Array<Record<string, unknown>>;
   nonTransactionRows: number[];
+  statement?: string;
 }
 
 function transaction(code: string, ocrRows: number[]): Record<string, unknown> {
@@ -49,10 +51,10 @@ function requests(): PlannedPtrAttachment[][] {
 
 function batch(request: PlannedPtrAttachment[], answer: (sourceId: string) => Answer): PtrBatchResult {
   const documents = request.map((attachment) => {
-    const { rows, nonTransactionRows } = answer(attachment.sourceId);
+    const { rows, nonTransactionRows, statement } = answer(attachment.sourceId);
     return {
       source_id: attachment.sourceId,
-      no_transactions_statement: null,
+      no_transactions_statement: statement ?? null,
       amended_report_date: null,
       amended_report_date_iso: null,
       non_transaction_rows: nonTransactionRows,
@@ -315,6 +317,83 @@ describe("ptrReadPasses", () => {
 
     const failed = await runMapReduceReads(planned(), failingReconcile("2014-06-26"), BUDGET);
     expect(failed.consensus).toMatchObject({ agreed: 0, arbitrated: 0, failed: 1 });
+  });
+
+  describe("repair reads", () => {
+    const planned = (): PlannedPtrAttachment[][] =>
+      planOcrTextRequests(
+        [
+          {
+            filingId: "f",
+            pages: [PAGE],
+            source: { kind: "images", filed: [Buffer.from("page-1")], rotations: [0], geometries: [null], upright: async (image) => image },
+          },
+        ],
+        { ...BUDGET, maxPagesPerRequest: 10 }
+      );
+    const withAsset = (row: Record<string, unknown>, asset: string): Record<string, unknown> => ({ ...row, asset_description: asset });
+
+    it("reads a window again when both reads agree on a row with no asset name, and takes the repeated asset", async () => {
+      // Lance 9108075: row 2's asset cell is a ditto mark under a DJIA put, and both reads left it blank.
+      const repairs: Array<readonly string[]> = [];
+      const answer = (_sourceId: string, read: ReadPass): Answer => {
+        const ocrRows = (row: number): number[] => (read.pass === 2 ? [] : [row]);
+        const second = read.pass === 4 ? "DJIA Index Option Put" : "";
+        return {
+          rows: [withAsset(transaction("P", ocrRows(3)), "DJIA Index Option Put"), withAsset(transaction("S", ocrRows(4)), second)],
+          nonTransactionRows: read.pass === 2 ? [] : [1, 2, 5],
+        };
+      };
+      const run: RunReadRequests = async (requests, read) => {
+        for (const attachment of requests.flat()) if (read.pass === 4) repairs.push(attachment.assetFindings ?? []);
+        return fakeRun(answer, [])(requests, read);
+      };
+
+      const { outcomes, consensus } = await runMapReduceReads(planned(), run, BUDGET);
+      expect(repairs).toEqual([["the row labeled 4 has no asset name"]]);
+      expect(consensus).toMatchObject({ agreed: 0, arbitrated: 1, failed: 0 });
+      expect(outcomes[0]!.result?.documents[0]!.rows.map((row) => row.asset_description)).toEqual([
+        "DJIA Index Option Put",
+        "DJIA Index Option Put",
+      ]);
+    });
+
+    it("keeps the decided read when the repair still leaves a row without an asset name", async () => {
+      const answer = (_sourceId: string, read: ReadPass): Answer => ({
+        rows: [transaction("P", read.pass === 2 ? [] : [3]), withAsset(transaction("S", read.pass === 2 ? [] : [4]), "")],
+        nonTransactionRows: read.pass === 2 ? [] : [1, 2, 5],
+      });
+      const { outcomes, consensus } = await runMapReduceReads(planned(), fakeRun(answer, []), BUDGET);
+      expect(consensus).toMatchObject({ agreed: 1, arbitrated: 0 });
+      expect(outcomes[0]!.result?.documents[0]!.rows[1]!.asset_description).toBe("");
+    });
+
+    it("reads an empty report again with the empty-read finding, and takes the statement the repair copies", async () => {
+      // McCaul 9107269: a letter correcting the IPO box of an earlier report, with no transaction of its own.
+      const repairs: Array<readonly string[]> = [];
+      const answer = (_sourceId: string, read: ReadPass): Answer =>
+        read.pass === 4
+          ? { rows: [], nonTransactionRows: [1, 2, 3, 4, 5], statement: "the IPO box was inadvertently checked yes" }
+          : { rows: [], nonTransactionRows: read.pass === 2 ? [] : [1, 2, 3, 4, 5] };
+      const run: RunReadRequests = async (requests, read) => {
+        for (const attachment of requests.flat()) if (read.pass === 4) repairs.push(attachment.emptyReadFindings ?? []);
+        return fakeRun(answer, [])(requests, read);
+      };
+
+      const { outcomes } = await runMapReduceReads(planned(), run, BUDGET);
+      expect(repairs).toEqual([[EMPTY_READ_FINDING]]);
+      expect(outcomes[0]!.result?.documents[0]!.noTransactionsStatement).toBe("the IPO box was inadvertently checked yes");
+    });
+
+    it("never repairs a filing whose reads already pass", async () => {
+      const calls: string[] = [];
+      const answer = (_sourceId: string, read: ReadPass): Answer => ({
+        rows: [transaction("P", read.pass === 2 ? [] : [3]), transaction("S", read.pass === 2 ? [] : [4])],
+        nonTransactionRows: read.pass === 2 ? [] : [1, 2, 5],
+      });
+      await runMapReduceReads(planned(), fakeRun(answer, calls), BUDGET);
+      expect(calls.some((call) => call.startsWith("4:"))).toBe(false);
+    });
   });
 
   it("returns a single read without consensus", async () => {

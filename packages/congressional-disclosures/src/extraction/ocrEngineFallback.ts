@@ -37,11 +37,23 @@ const ENGINE_INSTRUCTIONS =
   "column order. Copy dates exactly as printed (MM/DD/YYYY). Do not summarize, do not skip rows, do not add " +
   "commentary. Output only the transcription.";
 
-/** A retry-stable identity for one of the two independent engine reads. */
+/**
+ * Physical attempts at one engine read. The gateway answers a key whose request failed with that failure for good
+ * ("previously failed; refusing to dispatch another physical request"), so a read that failed once, such as
+ * house:8216921 page 1 on an upstream idle timeout, failed again on every later run. The second generation is a new
+ * key, tried only after the first fails.
+ */
+export const ENGINE_READ_GENERATIONS = 2;
+
+/**
+ * A retry-stable identity for one of the two independent engine reads. Generation 1 is the key every earlier release
+ * sent, so reads it already answered keep replaying; a later generation adds its number.
+ */
 export function engineIdempotencyKey(
   image: Buffer,
   read: EngineReadIndex,
-  model: string = DEFAULT_ENGINE_FALLBACK_OCR_MODEL
+  model: string = DEFAULT_ENGINE_FALLBACK_OCR_MODEL,
+  generation = 1
 ): string {
   const requestHash = crypto
     .createHash("sha256")
@@ -54,7 +66,9 @@ export function engineIdempotencyKey(
     .update(image)
     .digest("hex")
     .slice(0, 24);
-  return `ptr-engine-ocr-v2-r${read}-${requestHash}`;
+  return generation === 1
+    ? `ptr-engine-ocr-v2-r${read}-${requestHash}`
+    : `ptr-engine-ocr-v2-r${read}-g${generation}-${requestHash}`;
 }
 
 /**
@@ -62,6 +76,7 @@ export function engineIdempotencyKey(
  * call in the disclosure pipeline takes (orientation judge, extraction reads) — no separate credential.
  * Each independent read has its own stable idempotency key. Retrying read 1 replays read 1,
  * while read 2 is a separate physical request whose agreement is real rather than a replay.
+ * A read whose request fails is tried once more under its next generation's key.
  *
  * `model` defaults to the Gemini Flash generation the rung was measured on. `prepareImage`
  * normalizes the upright PNG for a request (the gateway-specific 4 MB JPEG fallback of
@@ -73,8 +88,7 @@ export function createEngineTranscriber(
   model: string = DEFAULT_ENGINE_FALLBACK_OCR_MODEL,
   prepareImage: (png: Buffer) => Promise<Buffer> = (png) => Promise.resolve(png)
 ): (png: Buffer, read: EngineReadIndex) => Promise<string> {
-  return async (png: Buffer, read: EngineReadIndex): Promise<string> => {
-    const image = await prepareImage(png);
+  const readOnce = async (image: Buffer, read: EngineReadIndex, generation: number): Promise<string> => {
     const { payload } = await client.complete({
       model,
       body: {
@@ -97,7 +111,7 @@ export function createEngineTranscriber(
           },
         ],
       },
-      idempotencyKey: engineIdempotencyKey(image, read, model),
+      idempotencyKey: engineIdempotencyKey(image, read, model, generation),
     });
     const content = (payload.choices as Array<Record<string, unknown>>)[0]?.message;
     const text = (content as Record<string, unknown> | undefined)?.content;
@@ -105,6 +119,18 @@ export function createEngineTranscriber(
       throw new Error(`engine read (${model}) returned no text`);
     }
     return text;
+  };
+  return async (png: Buffer, read: EngineReadIndex): Promise<string> => {
+    const image = await prepareImage(png);
+    const failures: string[] = [];
+    for (let generation = 1; generation <= ENGINE_READ_GENERATIONS; generation += 1) {
+      try {
+        return await readOnce(image, read, generation);
+      } catch (error: unknown) {
+        failures.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+    throw new Error(failures.join("; then "));
   };
 }
 
