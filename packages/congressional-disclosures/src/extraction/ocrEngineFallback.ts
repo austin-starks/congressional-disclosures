@@ -38,12 +38,13 @@ const ENGINE_INSTRUCTIONS =
   "commentary. Output only the transcription.";
 
 /**
- * Physical attempts at one engine read. The gateway answers a key whose request failed with that failure for good
- * ("previously failed; refusing to dispatch another physical request"), so a read that failed once, such as
- * house:8216921 page 1 on an upstream idle timeout, failed again on every later run. The second generation is a new
- * key, tried only after the first fails.
+ * Keys tried for one engine read, in order. The gateway answers a key whose request failed with that failure for
+ * good ("previously failed; refusing to dispatch another physical request"), and a client that disconnects mid-read
+ * fails its key as "canceled". House 8216921 page 1 lost its first key to an upstream idle timeout and its second to
+ * a gate run that exited while the read was in flight, so a read gets three keys, each tried only after the one
+ * before it fails.
  */
-export const ENGINE_READ_GENERATIONS = 2;
+export const ENGINE_READ_GENERATIONS = 3;
 
 /**
  * A retry-stable identity for one of the two independent engine reads. Generation 1 is the key every earlier release

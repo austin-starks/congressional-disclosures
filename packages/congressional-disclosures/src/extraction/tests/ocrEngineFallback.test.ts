@@ -1,5 +1,6 @@
 import {
   createEngineTranscriber,
+  ENGINE_READ_GENERATIONS,
   engineIdempotencyKey,
   enginePayload,
   readPageWithEngineFallback,
@@ -104,7 +105,7 @@ describe("readPageWithEngineFallback", () => {
     expect(keys[1]).toMatch(/^ptr-engine-ocr-v2-r2-g2-[0-9a-f]{24}$/);
   });
 
-  it("gives up after its second key, naming both failures", async () => {
+  it("gives up after its last key, naming every failure", async () => {
     let calls = 0;
     const client: CompletionClient = {
       complete: async () => {
@@ -112,8 +113,10 @@ describe("readPageWithEngineFallback", () => {
         throw new Error(`attempt ${calls} failed`);
       },
     };
-    await expect(createEngineTranscriber(client)(PNG, 1)).rejects.toThrow("attempt 1 failed; then attempt 2 failed");
-    expect(calls).toBe(2);
+    await expect(createEngineTranscriber(client)(PNG, 1)).rejects.toThrow(
+      "attempt 1 failed; then attempt 2 failed; then attempt 3 failed"
+    );
+    expect(calls).toBe(ENGINE_READ_GENERATIONS);
   });
 
   it("returns the Mistral read without consulting the engine when the ladder succeeds", async () => {
