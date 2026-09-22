@@ -204,6 +204,9 @@ const DATE_FINDINGS_INSTRUCTIONS = `
 const ASSET_FINDINGS_INSTRUCTIONS = `
 - Some sources come with asset findings: a transaction a prior read gave with no asset name, which fails the filing. Filers often mark a row's asset as the same as the row above instead of writing it again: a ditto mark (" or 〃), a word such as "same" or "do.", an arrow or line drawn down the asset column, or an asset cell left blank on a row that has its own type, date or amount. Read each such row's asset cell again from the filed pages and crops. When it repeats the asset above, asset_description is that asset's name as printed above.`;
 
+const KEPT_DATE_FINDINGS_INSTRUCTIONS = `
+- Some sources come with reconciled-date findings: a date a reconciling read gave a row although it cannot be true alongside the report's other dates, where Read A, taken from the OCR text of the same row, gives dates that can. A page read can misread a digit that the OCR and Read A got right: a 3 read as a 9 put notifications printed 03/01/23 six months after the report was filed. Read each such date again from the filed pages and crops, digit by digit, comparing each digit with the same digit printed elsewhere on the form, and return the date the page prints.`;
+
 const EMPTY_READ_FINDINGS_INSTRUCTIONS = `
 - Some sources come with an empty-read finding: no read of this report found a transaction or a statement that it has none, which fails the filing. Read the filed pages again. When they hold transactions, return them. When they hold none, such as a notice that the filer has nothing to report, or an amendment or letter that corrects an earlier report without listing a transaction of its own (one that corrects a checked box, or withdraws a transaction the earlier report listed), return an empty rows array and copy the sentence that says so, or that states what the amendment corrects, into no_transactions_statement.`;
 
@@ -311,6 +314,8 @@ export interface PtrDocumentInput {
   assetFindings?: readonly string[];
   /** That no read of the report found a transaction or a no-transactions statement, stated to a repair read. */
   emptyReadFindings?: readonly string[];
+  /** Dates a reconciling read kept with a date finding where Read A's row passes, stated to a repair read. */
+  keptDateFindings?: readonly string[];
 }
 
 /** An earlier read of a source, shown to a reconciling read under `label`. */
@@ -456,6 +461,7 @@ export interface PtrSourceForms {
   dateFindings?: boolean;
   assetFindings?: boolean;
   emptyReadFindings?: boolean;
+  keptDateFindings?: boolean;
 }
 
 export function ptrExtractionInstructions(
@@ -477,6 +483,7 @@ export function ptrExtractionInstructions(
     `${sources.priorReads && sources.dateFindings ? DATE_FINDINGS_INSTRUCTIONS : ""}` +
     `${sources.priorReads && sources.assetFindings ? ASSET_FINDINGS_INSTRUCTIONS : ""}` +
     `${sources.priorReads && sources.emptyReadFindings ? EMPTY_READ_FINDINGS_INSTRUCTIONS : ""}` +
+    `${sources.priorReads && sources.keptDateFindings ? KEPT_DATE_FINDINGS_INSTRUCTIONS : ""}` +
     `${contract === "lake" ? lake : ""}` +
     `\n- Use null only for a genuinely absent optional field, never to avoid reading a visible value.\n\n` +
     `Return one JSON object with a documents array. Include every mapped source_id exactly once, with its no_transactions_statement, amended_report_date, amended_report_date_iso, non_transaction_rows, continuation_rows, and rows. ` +
@@ -561,6 +568,7 @@ export function buildPtrExtractionBody(
     dateFindings: documents.some((document) => (document.dateFindings?.length ?? 0) > 0),
     assetFindings: documents.some((document) => (document.assetFindings?.length ?? 0) > 0),
     emptyReadFindings: documents.some((document) => (document.emptyReadFindings?.length ?? 0) > 0),
+    keptDateFindings: documents.some((document) => (document.keptDateFindings?.length ?? 0) > 0),
   };
   const content: Array<Record<string, unknown>> = [
     {
@@ -631,6 +639,7 @@ export function buildPtrExtractionBody(
           ...findingsPart(document.sourceId, "date findings", document.dateFindings),
           ...findingsPart(document.sourceId, "asset findings", document.assetFindings),
           ...findingsPart(document.sourceId, "empty-read findings", document.emptyReadFindings),
+          ...findingsPart(document.sourceId, "reconciled-date findings", document.keptDateFindings),
         ];
       }
       if (!document.pageImages) return [pdfPart()];
@@ -1046,6 +1055,9 @@ export function ptrBatchIdempotencyKey(
     if (document.assetFindings?.length) hash.update(JSON.stringify(["asset-findings", document.assetFindings]));
     if (document.emptyReadFindings?.length) {
       hash.update(JSON.stringify(["empty-read-findings", document.emptyReadFindings]));
+    }
+    if (document.keptDateFindings?.length) {
+      hash.update(JSON.stringify(["kept-date-findings", document.keptDateFindings]));
     }
   }
   return `ptr-extraction-${hash.digest("hex")}`;

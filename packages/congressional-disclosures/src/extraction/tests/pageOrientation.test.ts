@@ -85,22 +85,21 @@ describe("pageOrientation", () => {
     await expect(uprightPage(page, deps(null))).rejects.toThrow("page orientation undecided");
   });
 
-  it("keeps a textless page as rendered instead of asking the model", async () => {
-    // 821410 page 1: every turn scored 0 confident letters and the model judge could not
-    // decide, failing the filing. A page with no text cannot be mis-rotated.
+  it("asks the model to orient a page tesseract reads nothing on, and keeps it as rendered only when the model cannot", async () => {
+    // Khanna 8219417: 200-dpi fax micro-print scores 0 at every turn while full of text, and its sideways pages sent to
+    // OCR unturned lost their rows. 8218410 page 10: a blank ruled page the model cannot orient either.
     const page = Buffer.from("page");
-    const asked: number[] = [];
-    const result = await uprightPage(page, {
+    const deps = (answer: PageRotation | null) => ({
       rotate: fakeRotate,
       readWords: async () => [],
-      askUpright: async (candidates) => {
-        asked.push(candidates.length);
-        return null;
-      },
+      askUpright: async () => answer,
     });
-    expect(result).toMatchObject({ rotation: 0, decidedBy: "letters" });
-    expect(result.image.toString()).toBe("page");
-    expect(result.scores).toEqual(scores({ 0: 0, 90: 0, 180: 0, 270: 0 }));
-    expect(asked).toEqual([]);
+    const sideways = await uprightPage(page, deps(270));
+    expect(sideways).toMatchObject({ rotation: 270, decidedBy: "model" });
+    expect(sideways.image.toString()).toBe("page-270");
+    const blank = await uprightPage(page, deps(null));
+    expect(blank).toMatchObject({ rotation: 0, decidedBy: "letters" });
+    expect(blank.image.toString()).toBe("page");
+    expect(blank.scores).toEqual(scores({ 0: 0, 90: 0, 180: 0, 270: 0 }));
   });
 });

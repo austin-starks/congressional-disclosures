@@ -3,7 +3,8 @@
  * words of three or more letters that tesseract reads at confidence 80+; counting whole
  * words misjudges sideways forms, whose rules read as confident one-character tokens.
  * A turn wins when decisive (DECISIVE_MIN_LETTERS, DECISIVE_RATIO); otherwise the model
- * judges (`pageOrientationRead.ts`), and a page neither decides fails its filing.
+ * judges (`pageOrientationRead.ts`), and a page neither decides fails its filing, unless
+ * tesseract read nothing on it at any turn, when it is kept as rendered.
  */
 export type PageRotation = 0 | 90 | 180 | 270;
 
@@ -95,15 +96,15 @@ export async function uprightPage(png: Buffer, deps: UprightPageDeps): Promise<U
   if (vote.decisive) {
     return { image: imageOf(vote.rotation), rotation: vote.rotation, scores, decidedBy: "letters" };
   }
-  // A page tesseract reads no confident letters on at any turn holds no text to mis-rotate:
-  // keep it as rendered. Judging it by model reads failed such a page outright (house:821410,
-  // all four turns 0) when the only content downstream is none — the extraction's
-  // no-transactions answer covers a textless page, and a page with a few faint letters
-  // (any turn above 0) still goes to the model.
-  if (scores.every((score) => score.confidentLetters === 0)) {
+  const judged = await deps.askUpright(candidates);
+  // A page tesseract reads no confident letters on at any turn and the model cannot orient either is kept as rendered:
+  // failing it failed a blank ruled page outright (house:8218410). Keeping every such page as rendered without asking
+  // was wrong: 200-dpi fax micro-print scores 0 at every turn while full of text, and sideways pages of it sent to OCR
+  // unturned came back as hallucinated headers, dropping their rows without a failure (house:8219417 pages 4, 6, 8, 9
+  // and 14; 8217394 pages 4 and 5).
+  if (judged === null && scores.every((score) => score.confidentLetters === 0)) {
     return { image: png, rotation: 0, scores, decidedBy: "letters" };
   }
-  const judged = await deps.askUpright(candidates);
   if (judged === null) {
     const letters = scores.map((score) => `${score.rotation}=${score.confidentLetters}`).join(" ");
     throw new Error(

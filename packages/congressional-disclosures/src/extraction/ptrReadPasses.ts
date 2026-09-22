@@ -16,6 +16,7 @@ import {
   pageReadsAgree,
   type PtrConsensusDecision,
 } from "./ptrConsensus";
+import { MAX_DATED_LINE_SPREAD, MAX_DATED_LINE_SPREAD_FRACTION } from "./ocrPageCoverage";
 import { describePtrRow, ptrRowDateFindings } from "./ptrDateChecks";
 import type { PtrBatchResult, PtrDocumentResult, PtrPriorRead, PtrRowWindow } from "./ptrExtraction";
 import { gapFillRanges, mergeGapFills } from "./ptrGapFill";
@@ -368,6 +369,41 @@ function dateFindingsByPage(
   return findings;
 }
 
+/**
+ * Filings whose page read (Read B, which reads every filed page) lists more transactions on a page than the OCR text
+ * holds table rows there, beyond the spread two reads of one page may show, by the source id of the filing's first
+ * window, with the reason. Windows and every read of them are planned from the OCR text, so rows the OCR left out were
+ * never read, and nothing failed: both OCR reads of house:8218338 page 21 gave only the column headers of a page Read B
+ * lists 70 transactions on, and its pages 12 and 18 lost about 20 rows each the same way. Such a filing fails, naming
+ * the pages, rather than publishing without them. Across 228 pages of 44 scanned filings no page fell short.
+ */
+function pageReadShortfalls(
+  windows: readonly PlannedPtrAttachment[],
+  sourceReads: ReadonlyMap<string, PtrDocumentResult>
+): Map<string, string> {
+  const firstWindows = new Map<string, PlannedPtrAttachment>();
+  for (const window of windows) if (!firstWindows.has(window.filingId)) firstWindows.set(window.filingId, window);
+  const failures = new Map<string, string>();
+  for (const [filingId, window] of firstWindows) {
+    const numbered = window.numberedOcr;
+    if (!numbered) continue;
+    const short = Array.from({ length: window.totalPages }, (_, offset) => offset + 1).flatMap((page) => {
+      const read = sourceReads.get(sourceReadId(filingId, page));
+      if (!read || read.error) return [];
+      const ocrRows = numbered.tableRows.filter((table, index) => table && numbered.rowPages[index] === page).length;
+      const listed = read.rows.length;
+      const spread = Math.max(MAX_DATED_LINE_SPREAD, Math.ceil(MAX_DATED_LINE_SPREAD_FRACTION * listed));
+      return listed - ocrRows > spread ? [`page ${page} (${listed} listed, ${ocrRows} OCR table rows)`] : [];
+    });
+    if (short.length === 0) continue;
+    failures.set(
+      window.sourceId,
+      `${MAP_READ_LABELS.source} lists more transactions than the OCR text holds rows on ${short.join(", ")}`
+    );
+  }
+  return failures;
+}
+
 /** Read B as a window's reconciling read sees it: every transaction listed on the pages its rows sit on, by page. */
 function sourceReadOfWindow(
   window: PlannedPtrAttachment,
@@ -412,6 +448,47 @@ function emptyRead(result: PtrDocumentResult | undefined): boolean {
 interface RepairFindings {
   assetFindings: string[];
   emptyReadFindings: string[];
+  keptDateFindings: string[];
+}
+
+function rowLabels(row: Record<string, unknown>): number[] {
+  return Array.isArray(row.ocr_rows) ? row.ocr_rows.filter((value): value is number => Number.isInteger(value)) : [];
+}
+
+/**
+ * Rows of a reconciled read whose dates carry a date finding (`ptrDateChecks.ts`) where Read A's row with the same OCR
+ * row label gives dates with none. The reconciling read had both map reads and the finding and can still take the page
+ * read's misread digit: house:8219417's pages 5 and 7 print 03/01/23 on 18 rows, both OCR reads and Read A give it,
+ * and the reconciling read kept Read B's 09/01/23, six months after the report was filed. A row Read A also flags,
+ * gives no date for where the reconciled row gives one, or has no row for, is left as reconciled: the page may print
+ * that date.
+ */
+function keptDateFindingsOf(
+  window: PlannedPtrAttachment,
+  result: PtrDocumentResult,
+  text: PtrDocumentResult | undefined
+): string[] {
+  if (!text || text.error) return [];
+  const filedOn = window.filedOn ?? null;
+  const textRows = new Map<number, Record<string, unknown>>();
+  for (const row of text.rows) for (const label of rowLabels(row)) if (!textRows.has(label)) textRows.set(label, row);
+  return result.rows.flatMap((row) => {
+    const findings = ptrRowDateFindings(row, filedOn);
+    const textRow = rowLabels(row)
+      .map((label) => textRows.get(label))
+      .find((candidate) => candidate !== undefined);
+    const datesGiven = (candidate: Record<string, unknown>): boolean =>
+      ["transaction_date_iso", "notification_date_iso"].every(
+        (field) => row[field] === null || row[field] === undefined || typeof candidate[field] === "string"
+      );
+    if (findings.length === 0 || !textRow || !datesGiven(textRow) || ptrRowDateFindings(textRow, filedOn).length > 0) {
+      return [];
+    }
+    const textDates =
+      `transaction date ${String(textRow.transaction_date_iso ?? "none")}` +
+      ` and notification date ${String(textRow.notification_date_iso ?? "none")}`;
+    return findings.map((finding) => `${describePtrRow(row)}: ${finding}, where ${MAP_READ_LABELS.text} gives ${textDates}`);
+  });
 }
 
 export const EMPTY_READ_FINDING = "No read of this report found a transaction or a statement that it has none.";
@@ -426,7 +503,8 @@ export const EMPTY_READ_FINDING = "No read of this report found a transaction or
 function repairFindingsOf(
   windows: readonly PlannedPtrAttachment[],
   decisions: readonly PtrConsensusDecision[],
-  reconciled: ReadonlyMap<string, PtrDocumentResult>
+  reconciled: ReadonlyMap<string, PtrDocumentResult>,
+  textReads: ReadonlyMap<string, PtrDocumentResult>
 ): Map<string, RepairFindings> {
   const decided = new Map(decisions.map((decision) => [decision.id, decision]));
   const findings = new Map<string, RepairFindings>();
@@ -436,7 +514,11 @@ function repairFindingsOf(
     const assetFindings = decision.result.rows
       .filter(missingAsset)
       .map((row) => `${describePtrRow(row)} has no asset name`);
-    if (assetFindings.length > 0) findings.set(window.sourceId, { assetFindings, emptyReadFindings: [] });
+    const keptDateFindings =
+      decision.outcome === "arbitrated" ? keptDateFindingsOf(window, decision.result, textReads.get(window.sourceId)) : [];
+    if (assetFindings.length > 0 || keptDateFindings.length > 0) {
+      findings.set(window.sourceId, { assetFindings, emptyReadFindings: [], keptDateFindings });
+    }
   }
   const byFiling = new Map<string, PlannedPtrAttachment[]>();
   for (const window of windows) byFiling.set(window.filingId, [...(byFiling.get(window.filingId) ?? []), window]);
@@ -451,16 +533,26 @@ function repairFindingsOf(
     });
     if (!empty) continue;
     for (const window of group) {
-      findings.set(window.sourceId, { assetFindings: [], emptyReadFindings: [EMPTY_READ_FINDING] });
+      findings.set(window.sourceId, { assetFindings: [], emptyReadFindings: [EMPTY_READ_FINDING], keptDateFindings: [] });
     }
   }
   return findings;
 }
 
-/** A repair read settles its window only when it clears the finding that sent it; otherwise the decision stands. */
-function repairSettles(findings: RepairFindings, result: PtrDocumentResult | undefined): result is PtrDocumentResult {
+/**
+ * A repair read settles its window only when it clears the finding that sent it; otherwise the decision stands. A kept
+ * date the repair read keeps too, having been shown Read A's, is one the page may print: a handwritten 1/17/14 that
+ * OCR read as 11/7/14 on a report of dates a year old (house:9108306).
+ */
+function repairSettles(
+  findings: RepairFindings,
+  result: PtrDocumentResult | undefined,
+  window: PlannedPtrAttachment,
+  text: PtrDocumentResult | undefined
+): result is PtrDocumentResult {
   if (!result || result.error) return false;
   if (findings.assetFindings.length > 0 && result.rows.some(missingAsset)) return false;
+  if (findings.keptDateFindings.length > 0 && keptDateFindingsOf(window, result, text).length > 0) return false;
   return true;
 }
 
@@ -470,7 +562,8 @@ function repairSettles(findings: RepairFindings, result: PtrDocumentResult | und
  * pages all agree and give no date finding is accepted; any other gets one reconciling read with
  * both reads, the filed pages and its date findings, which must still pass row coverage or the
  * window fails for a later retry. A window whose decided read would still fail its filing for a missing asset name or
- * an empty report gets one repair read with that finding (`repairFindingsOf`).
+ * an empty report gets one repair read with that finding (`repairFindingsOf`), and so does a reconciled window that
+ * kept a flagged date Read A reads without a finding.
  */
 export async function runMapReduceReads(
   requests: PlannedPtrAttachment[][],
@@ -491,8 +584,12 @@ export async function runMapReduceReads(
   const disagreed = disputedPages(windows, textReads, sourceReads);
   const dateFindings = dateFindingsByPage(windows, textReads, sourceReads);
   const disputed = new Set([...disagreed, ...dateFindings.keys()]);
-  const reconciling = windows.filter((window) =>
-    windowRowPages(window).some((page) => disputed.has(pageKey(window.filingId, page)))
+  const uncovered = pageReadShortfalls(windows, sourceReads);
+  const failingFilings = new Set(windows.filter((window) => uncovered.has(window.sourceId)).map((window) => window.filingId));
+  const reconciling = windows.filter(
+    (window) =>
+      !failingFilings.has(window.filingId) &&
+      windowRowPages(window).some((page) => disputed.has(pageKey(window.filingId, page)))
   );
   // Windows whose map reads agree on every page, sent to reconcile only by a date finding. Before date findings
   // existed they were accepted as read, so a reconciling read that fails leaves them as read rather than failing them.
@@ -532,6 +629,8 @@ export async function runMapReduceReads(
   const reconcilingIds = new Set(reconciling.map((window) => window.sourceId));
   const decisions = windows.map((window): PtrConsensusDecision => {
     const id = window.sourceId;
+    const uncoveredReason = uncovered.get(id);
+    if (uncoveredReason) return { id, outcome: "failed", result: failedPtrResult(id, uncoveredReason) };
     const text = textReads.get(id);
     if (text && !reconcilingIds.has(id)) return { id, outcome: "agreed", result: text };
     const result = reconciled.get(id);
@@ -540,7 +639,12 @@ export async function runMapReduceReads(
     const reason = planningErrors.get(id) ?? result?.error ?? "the reconciling read returned no answer";
     return { id, outcome: "failed", result: failedPtrResult(id, `map reads disagreed and reconciling failed: ${reason}`) };
   });
-  const repairs = repairFindingsOf(windows, decisions, reconciled);
+  const repairs = repairFindingsOf(
+    windows.filter((window) => !failingFilings.has(window.filingId)),
+    decisions,
+    reconciled,
+    textReads
+  );
   const repairAttachments = (
     await Promise.all(
       windows
@@ -563,10 +667,15 @@ export async function runMapReduceReads(
           { pass: 4, gap: false }
         );
   const repaired = readsOf(repairOutcomes);
+  const windowsById = new Map(windows.map((window) => [window.sourceId, window]));
   const finalDecisions = decisions.map((decision): PtrConsensusDecision => {
     const findings = repairs.get(decision.id);
+    const window = windowsById.get(decision.id);
+    if (!findings || !window) return decision;
     const result = repaired.get(decision.id);
-    return findings && repairSettles(findings, result) ? { id: decision.id, outcome: "arbitrated", result } : decision;
+    return repairSettles(findings, result, window, textReads.get(decision.id))
+      ? { id: decision.id, outcome: "arbitrated", result }
+      : decision;
   });
   return decidedReads(
     textRead.outcomes,

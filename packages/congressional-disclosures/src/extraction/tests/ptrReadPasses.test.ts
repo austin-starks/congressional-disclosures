@@ -319,6 +319,51 @@ describe("ptrReadPasses", () => {
     expect(failed.consensus).toMatchObject({ agreed: 0, arbitrated: 0, failed: 1 });
   });
 
+  describe("a page the page read lists more transactions on than the OCR text holds rows", () => {
+    // Khanna 8218338 page 21: both OCR reads gave only the column headers of a page Read B lists 70 transactions on, so
+    // those rows were never read, and nothing compared the two.
+    const twoPages = (): PlannedPtrAttachment[][] =>
+      planOcrTextRequests(
+        [
+          {
+            filingId: "f",
+            pages: [PAGE, ""],
+            source: {
+              kind: "images",
+              filed: [Buffer.from("page-1"), Buffer.from("page-2")],
+              rotations: [0, 0],
+              geometries: [null, null],
+              upright: async (image) => image,
+            },
+          },
+        ],
+        { ...BUDGET, maxPagesPerRequest: 10 }
+      );
+    const reads = (pageTwoRows: number) => (sourceId: string, read: ReadPass): Answer => {
+      if (read.pass === 2) {
+        return sourceId === "f:s2"
+          ? { rows: Array.from({ length: pageTwoRows }, () => transaction("P", [])), nonTransactionRows: [] }
+          : { rows: [transaction("P", []), transaction("S", [])], nonTransactionRows: [] };
+      }
+      return { rows: [transaction("P", [3]), transaction("S", [4])], nonTransactionRows: [1, 2, 5] };
+    };
+
+    it("fails the filing when the page read lists transactions there", async () => {
+      const calls: string[] = [];
+      const { outcomes, consensus } = await runMapReduceReads(twoPages(), fakeRun(reads(3), calls), BUDGET);
+      expect(consensus).toMatchObject({ failed: 1 });
+      expect(outcomes[0]!.result?.documents[0]!.error).toContain(
+        `${MAP_READ_LABELS.source} lists more transactions than the OCR text holds rows on page 2 (3 listed, 0 OCR table rows)`
+      );
+      expect(calls.some((call) => call.startsWith("3:") || call.startsWith("4:"))).toBe(false);
+    });
+
+    it("accepts the filing when the page read lists no more than two rows the OCR text lacks", async () => {
+      const { consensus } = await runMapReduceReads(twoPages(), fakeRun(reads(2), []), BUDGET);
+      expect(consensus).toMatchObject({ agreed: 1, failed: 0 });
+    });
+  });
+
   describe("repair reads", () => {
     const planned = (): PlannedPtrAttachment[][] =>
       planOcrTextRequests(
@@ -383,6 +428,85 @@ describe("ptrReadPasses", () => {
       const { outcomes } = await runMapReduceReads(planned(), run, BUDGET);
       expect(repairs).toEqual([[EMPTY_READ_FINDING]]);
       expect(outcomes[0]!.result?.documents[0]!.noTransactionsStatement).toBe("the IPO box was inadvertently checked yes");
+    });
+
+    describe("a reconciled date Read A reads without a finding", () => {
+      // Khanna 8219417: pages 5 and 7 print 03/01/23, Read A gives it, Read B read 09/01/23, and the reconciling read
+      // kept 09/01/23, six months after the report was filed on 3/3/23.
+      const filed = (): PlannedPtrAttachment[][] =>
+        planOcrTextRequests(
+          [
+            {
+              filingId: "f",
+              pages: [PAGE],
+              filedOn: "2023-03-03",
+              source: { kind: "images", filed: [Buffer.from("page-1")], rotations: [0], geometries: [null], upright: async (image) => image },
+            },
+          ],
+          { ...BUDGET, maxPagesPerRequest: 10 }
+        );
+      const notified = (ocrRows: number[], notification: string): Record<string, unknown> => ({
+        ...transaction("P", ocrRows),
+        transaction_date_iso: "2023-02-14",
+        notification_date_iso: notification,
+      });
+      const reads = (repairDate: string) => (_sourceId: string, read: ReadPass): Answer => {
+        if (read.pass === 1) return { rows: [notified([3], "2023-03-01"), notified([4], "2023-03-01")], nonTransactionRows: [1, 2, 5] };
+        if (read.pass === 2) return { rows: [notified([], "2023-03-01"), notified([], "2023-09-01")], nonTransactionRows: [] };
+        const second = read.pass === 3 ? "2023-09-01" : repairDate;
+        return { rows: [notified([3], "2023-03-01"), notified([4], second)], nonTransactionRows: [1, 2, 5] };
+      };
+
+      it("reads the window again with the kept date stated, and takes the date the repair reads", async () => {
+        const repairs: Array<readonly string[]> = [];
+        const run: RunReadRequests = async (requests, read) => {
+          for (const attachment of requests.flat()) if (read.pass === 4) repairs.push(attachment.keptDateFindings ?? []);
+          return fakeRun(reads("2023-03-01"), [])(requests, read);
+        };
+
+        const { outcomes, consensus } = await runMapReduceReads(filed(), run, BUDGET);
+        expect(repairs).toEqual([
+          [
+            `the row labeled 4: notification date 2023-09-01 is more than a month after the report was filed on 2023-03-03, ` +
+              `where ${MAP_READ_LABELS.text} gives transaction date 2023-02-14 and notification date 2023-03-01`,
+          ],
+        ]);
+        expect(consensus).toMatchObject({ arbitrated: 1, failed: 0 });
+        expect(outcomes[0]!.result?.documents[0]!.rows.map((row) => row.notification_date_iso)).toEqual([
+          "2023-03-01",
+          "2023-03-01",
+        ]);
+      });
+
+      it("keeps the reconciled date when the repair, shown Read A's, keeps it too", async () => {
+        // Kelly 9108306: a handwritten 1/17/14 that OCR read as 11/7/14, on a report of dates a year old.
+        const { outcomes, consensus } = await runMapReduceReads(filed(), fakeRun(reads("2023-09-01"), []), BUDGET);
+        expect(consensus).toMatchObject({ arbitrated: 1, failed: 0 });
+        expect(outcomes[0]!.result?.documents[0]!.rows[1]!.notification_date_iso).toBe("2023-09-01");
+      });
+
+      it("never repairs for a date Read A leaves blank", async () => {
+        // Upton 9113583: Read A gave the row no transaction date, which no date check can flag.
+        const calls: string[] = [];
+        const blank = (sourceId: string, read: ReadPass): Answer => {
+          const answer = reads("2023-03-01")(sourceId, read);
+          if (read.pass !== 1) return answer;
+          return { ...answer, rows: [answer.rows[0]!, { ...answer.rows[1]!, notification_date_iso: null }] };
+        };
+        await runMapReduceReads(filed(), fakeRun(blank, calls), BUDGET);
+        expect(calls.some((call) => call.startsWith("4:"))).toBe(false);
+      });
+
+      it("leaves a reconciled date Read A flags too, since the page may print it", async () => {
+        const calls: string[] = [];
+        const flagged = (_sourceId: string, read: ReadPass): Answer =>
+          read.pass === 2
+            ? { rows: [notified([], "2023-09-01"), notified([], "2023-03-01")], nonTransactionRows: [] }
+            : { rows: [notified([3], "2023-09-01"), notified([4], "2023-03-01")], nonTransactionRows: [1, 2, 5] };
+        const { consensus } = await runMapReduceReads(filed(), fakeRun(flagged, calls), BUDGET);
+        expect(calls.some((call) => call.startsWith("4:"))).toBe(false);
+        expect(consensus).toMatchObject({ arbitrated: 1, failed: 0 });
+      });
     });
 
     it("never repairs a filing whose reads already pass", async () => {
