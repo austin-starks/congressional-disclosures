@@ -14,6 +14,8 @@ import { isHelpRequest } from "./cliArgs";
 import { commandAvailable } from "./runtime/poppler";
 import { MistralOcrClient } from "./providers/mistralOcr";
 import { OpenAiCompatibleCompletionClient } from "./providers/openaiCompatible";
+import { loadLegislators } from "./identity/legislators";
+import { MemberResolver } from "./identity/resolve";
 import { SQLitePoliticalRepository } from "./storage/sqlite";
 import { auditPoliticalRepository, syncPoliticalDisclosures } from "./sync";
 
@@ -66,6 +68,7 @@ Download options:
 
 Sync options:
   --cache-dir DIR                Raw documents and paid response cache
+  --legislators-commit SHA       Pin congress-legislators (gh-pages, full SHA); default is the newest
   --year YEAR                    Sync one year instead of --since through current year
   --chamber house|senate|both    Default: both
   --max-filings N                Bound one run
@@ -201,7 +204,15 @@ async function main(): Promise<number> {
     if (sinceYear === undefined) throw new Error("--since is required");
     const chamber = textFlag(flags, "chamber", "both");
     if (chamber !== "house" && chamber !== "senate" && chamber !== "both") throw new Error("--chamber must be house, senate, or both");
-    const cache = new LocalCache(resolve(textFlag(flags, "cache-dir", "./.congressional-disclosures") ?? "./.congressional-disclosures"));
+    const cacheRoot = resolve(textFlag(flags, "cache-dir", "./.congressional-disclosures") ?? "./.congressional-disclosures");
+    const cache = new LocalCache(cacheRoot);
+    const legislatorsCommit = textFlag(flags, "legislators-commit");
+    const legislators = await loadLegislators({
+      cacheDir: resolve(cacheRoot, "legislators"),
+      ...(legislatorsCommit ? { commit: legislatorsCommit } : {}),
+    });
+    process.stderr.write(`[identity] congress-legislators ${legislators.commit} (${legislators.legislators.length} people)\n`);
+    const resolver = new MemberResolver(legislators);
     const ocrModel = textFlag(flags, "ocr-model");
     const openRouterKey = process.env.OPENROUTER_API_KEY;
     const mistralKey = process.env.MISTRAL_API_KEY;
@@ -217,7 +228,7 @@ async function main(): Promise<number> {
     const model = textFlag(flags, "model", process.env.CONGRESSIONAL_DISCLOSURES_MODEL ?? "google/gemini-3.1-flash-lite")
       ?? "google/gemini-3.1-flash-lite";
     const summary = await syncPoliticalDisclosures({
-      repository, cache, sinceYear, chamber, model,
+      repository, resolver, cache, sinceYear, chamber, model,
       ...(year !== undefined ? { year } : {}),
       ...(completion ? { completion } : {}),
       ...(ocr ? { ocr } : {}),

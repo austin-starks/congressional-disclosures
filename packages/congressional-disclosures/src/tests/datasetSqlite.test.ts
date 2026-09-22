@@ -10,7 +10,7 @@ import {
 } from "../dataset";
 import { buildPoliticalTradeEvents } from "../lake/events";
 import { SQLitePoliticalRepository } from "../storage/sqlite";
-import { filingFixture, tradeFixture } from "./helpers";
+import { filingFixture, identifiedLake, tradeFixture } from "./helpers";
 
 const TABLES = ["political_filings", "political_trades", "political_trade_events"] as const;
 
@@ -34,8 +34,10 @@ function fixtureSnapshot(): CongressionalDatasetSnapshot {
   };
 }
 
-const filing = filingFixture();
-const trade = tradeFixture();
+const lake = identifiedLake([filingFixture()], [tradeFixture()]);
+const [filing] = lake.filings;
+const [trade] = lake.trades;
+if (!filing || !trade) throw new Error("identified fixture was not created");
 const [event] = buildPoliticalTradeEvents([trade], [filing]);
 if (!event) throw new Error("event fixture was not created");
 
@@ -65,7 +67,7 @@ describe("public dataset SQLite materialization", () => {
     await expect(stat(`${database}-shm`)).rejects.toMatchObject({ code: "ENOENT" });
     const repository = new SQLitePoliticalRepository(database);
     try {
-      expect(await repository.counts()).toEqual({ filings: 1, trades: 1, events: 1, failedFilings: 0 });
+      expect(await repository.counts()).toEqual({ filings: 1, trades: 1, events: 1, failedFilings: 0, members: 1, unresolvedFilings: 0 });
       const lake = await repository.snapshot();
       expect(lake.events[0]).toMatchObject({ filerLast: "Pelosi", ticker: "AAPL", action: "purchase" });
       expect(lake.events[0]?.transactionDate).toBe("2024-06-10");

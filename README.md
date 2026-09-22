@@ -208,7 +208,7 @@ Recent normalized transaction rows:
 
 ```bash
 sqlite3 ./congress.db \
-  "SELECT filer_first || ' ' || filer_last AS member,
+  "SELECT display_name AS member,
           transaction_date,
           COALESCE(printed_ticker, resolved_ticker) AS ticker,
           action,
@@ -223,15 +223,15 @@ Members with the most purchases first disclosed in 2024:
 
 ```sql
 SELECT
-  filer_first || ' ' || filer_last AS member,
-  chamber,
+  member_id,
+  display_name AS member,
   COUNT(*) AS purchases
 FROM political_trade_events
 WHERE action = 'purchase'
   AND first_available_at >= '2024-01-01'
   AND first_available_at < '2025-01-01'
   AND superseded_at IS NULL
-GROUP BY member, chamber
+GROUP BY member_id, display_name
 ORDER BY purchases DESC
 LIMIT 20;
 ```
@@ -242,7 +242,7 @@ Stocks purchased by the most distinct members:
 SELECT
   ticker,
   COUNT(*) AS purchases,
-  COUNT(DISTINCT filer_key) AS distinct_members
+  COUNT(DISTINCT member_id) AS distinct_members
 FROM political_trade_events
 WHERE action = 'purchase'
   AND ticker IS NOT NULL
@@ -378,11 +378,46 @@ Focused entry points—`/extraction`, `/lake`, `/sources`, `/backfill`,
 `/integrity`, and `/storage`—let a server import the congressional domain
 without loading the SQLite runtime.
 
-## Version 1 stability
+### Member identity
+
+The official indexes spell members inconsistently. The House Clerk has listed
+Rep. Scott Franklin as `Scott`, `C. Scott`, `Scott Scott` and `Scott Mr`, and the
+Senate often files names in capitals. Every filing is therefore matched to a
+member of Congress using the public-domain
+[congress-legislators](https://github.com/unitedstates/congress-legislators)
+data, and every table carries the result:
+
+| Column | Meaning |
+|---|---|
+| `member_id` | Bioguide ID, one per person across name spellings and both chambers |
+| `display_name` | The member's official name; `filer_first` and `filer_last` keep the name as filed |
+| `filer_key` | `member:<member_id>` for members, the normalized filed name for anyone else |
+| `identity_source` | `legislators`, `override`, `non_member`, or `unresolved` |
+
+A filing matches everyone who had served in its seat (House) or chamber
+(Senate) by the filing date, after accents, honorifics and credentials are
+removed from both names; ties break on given names, then on the most recent
+service. Nothing is matched by similarity. What the rules cannot decide is
+settled by a reviewed override that cites the filing proving it, such as a
+member filing under a married name, or a committee employee whose report
+reached the member index.
+
+Only members of Congress have events. Filings by people who never served stay
+in `political_filings` and `political_trades` with `identity_source =
+'non_member'`, so the tables still account for every official document.
+
+`sync` downloads the member data once per upstream commit and caches it beside
+the documents; pin a commit with `--legislators-commit` to reproduce a run.
+`download` never needs it, because the published tables already carry identity.
+
+## Version stability
 
 The CLI command names, documented flags, SQLite table grains, and published
 JavaScript entry points are covered by SemVer starting with 1.0. A breaking
-change to one of those contracts requires a new major version. New columns,
+change to one of those contracts requires a new major version. 2.0 was one:
+`filer_key` now names a member of Congress, events exist only for members,
+`SyncOptions` requires a `resolver`, and `PoliticalRepository` gained
+`reidentify`. A 1.x SQLite database is migrated in place on its next `sync`. New columns,
 new optional flags, extraction improvements, and additional audit findings may
 ship in minor releases when existing callers keep working.
 

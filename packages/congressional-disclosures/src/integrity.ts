@@ -27,6 +27,10 @@ export interface LakeFiling {
   docId: string;
   filingDate: string;
   extractionStatus: LakeExtractionStatus;
+  /** Identity columns (2.0+). Absent skips the identity checks. */
+  filerKey?: string;
+  memberId?: string | null;
+  identitySource?: string;
 }
 
 /** One `political_trades` row: a printed transaction of an `ok` filing. */
@@ -48,6 +52,7 @@ export interface LakeTradeEvent {
   eventId: string;
   chamber: DisclosureChamber;
   sourceDocId: string;
+  identitySource?: string;
   /** JSON array of `"docId:rowIndex"` observations, in availability order. */
   contributorRowIds: string;
 }
@@ -78,7 +83,11 @@ export type PoliticalIntegrityCheck =
   | "resolved_without_ticker"
   | "extraction_health"
   | "freshness"
-  | "manifest_health";
+  | "manifest_health"
+  | "member_split"
+  | "unresolved_filers"
+  | "non_member_events"
+  | "stale_overrides";
 
 export interface PoliticalIntegrityFinding {
   check: PoliticalIntegrityCheck;
@@ -112,6 +121,8 @@ export interface PoliticalIntegrityInput {
    * later cap turns this into a count, not a discard of the whole filing.
    */
   datedAfterFilingCap?: number;
+  /** Reviewed member overrides their own proving filing no longer matches (`MemberResolver.staleOverrides`); any is a failure. */
+  staleOverrides?: readonly string[];
 }
 
 export interface PoliticalIntegrityReport {
@@ -375,8 +386,43 @@ export function unhealthyManifestYears(
   return broken.sort();
 }
 
+/** Members whose filings carry more than one filer key: the split identity exists to prevent. */
+export function splitMembers(filings: readonly LakeFiling[]): string[] {
+  const keys = new Map<string, Set<string>>();
+  for (const filing of filings) {
+    if (!filing.memberId || filing.filerKey === undefined) continue;
+    keys.set(filing.memberId, (keys.get(filing.memberId) ?? new Set()).add(filing.filerKey));
+  }
+  return [...keys.entries()].filter(([, set]) => set.size > 1).map(([memberId, set]) => `${memberId} ${[...set].join(" | ")}`);
+}
+
+export function unresolvedFilers(filings: readonly LakeFiling[]): string[] {
+  return filings
+    .filter((filing) => filing.identitySource === "unresolved")
+    .map((filing) => `${filingKey(filing.chamber, filing.docId)} ${filing.filerKey ?? ""}`.trim());
+}
+
+/** Events only exist for members; an event from any other filer is a build defect. */
+export function nonMemberEvents(events: readonly LakeTradeEvent[]): string[] {
+  return events
+    .filter((event) => event.identitySource !== undefined && event.identitySource !== "legislators" && event.identitySource !== "override")
+    .map((event) => event.eventId);
+}
+
 export function auditPoliticalIntegrity(input: PoliticalIntegrityInput): PoliticalIntegrityReport {
   const findings: PoliticalIntegrityFinding[] = [];
+
+  const split = splitMembers(input.filings);
+  if (split.length > 0) findings.push(finding("member_split", split, "members whose filings carry more than one filer key"));
+  const unresolved = unresolvedFilers(input.filings);
+  if (unresolved.length > 0) {
+    findings.push(finding("unresolved_filers", unresolved, "filings no member of Congress matched; add a reviewed override", "info"));
+  }
+  const strayEvents = nonMemberEvents(input.events);
+  if (strayEvents.length > 0) findings.push(finding("non_member_events", strayEvents, "events whose filer is not a member"));
+  if (input.staleOverrides && input.staleOverrides.length > 0) {
+    findings.push(finding("stale_overrides", [...input.staleOverrides], "member overrides their proving filing no longer matches"));
+  }
   const failedShareByYear = failedShareByFilingYear(input.filings);
 
   if (input.indexed && input.indexed.length > 0) {

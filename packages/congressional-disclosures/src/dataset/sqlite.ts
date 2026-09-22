@@ -19,6 +19,8 @@ import {
   type PoliticalTradeRow,
   type ResolutionStatus,
 } from "../lake/types";
+import type { IdentifiedFilingRow, IdentifiedTradeRow } from "../identity/apply";
+import { IDENTITY_SOURCES, type FilerIdentity } from "../identity/types";
 import { SQLitePoliticalRepository } from "../storage/sqlite";
 import type { CongressionalDatasetSnapshot, DatasetTable } from "./download";
 
@@ -118,9 +120,23 @@ function enumValue<const T extends readonly string[]>(
   return value as T[number];
 }
 
-function filingRow(value: unknown): PoliticalFilingRow {
+/** Identity columns, present in every snapshot published by 2.0 and later. */
+function identity(row: Record<string, unknown>, table: string): FilerIdentity {
+  if (!("filerKey" in row) || !("identitySource" in row)) {
+    throw new Error(`${table} has no member identity columns; this snapshot predates congressional-disclosures 2.0`);
+  }
+  return {
+    filerKey: stringValue(row, "filerKey"),
+    memberId: nullableString(row, "memberId"),
+    displayName: stringValue(row, "displayName"),
+    identitySource: enumValue(row, "identitySource", IDENTITY_SOURCES),
+  };
+}
+
+function filingRow(value: unknown): IdentifiedFilingRow {
   const row = object(value, "political_filings row");
   return {
+    ...identity(row, "political_filings"),
     chamber: enumValue(row, "chamber", POLITICAL_CHAMBERS) as PoliticalChamber,
     docId: stringValue(row, "docId"),
     filerFirst: stringValue(row, "filerFirst"),
@@ -146,9 +162,10 @@ function filingRow(value: unknown): PoliticalFilingRow {
   };
 }
 
-function tradeRow(value: unknown): PoliticalTradeRow {
+function tradeRow(value: unknown): IdentifiedTradeRow {
   const row = object(value, "political_trades row");
   return {
+    ...identity(row, "political_trades"),
     chamber: enumValue(row, "chamber", POLITICAL_CHAMBERS) as PoliticalChamber,
     docId: stringValue(row, "docId"),
     rowIndex: numberValue(row, "rowIndex"),
@@ -187,6 +204,7 @@ function tradeRow(value: unknown): PoliticalTradeRow {
 function eventRow(value: unknown): PoliticalTradeEventRow {
   const row = object(value, "political_trade_events row");
   return {
+    ...identity(row, "political_trade_events"),
     eventId: stringValue(row, "eventId"),
     version: numberValue(row, "version"),
     chamber: enumValue(row, "chamber", POLITICAL_CHAMBERS) as PoliticalChamber,

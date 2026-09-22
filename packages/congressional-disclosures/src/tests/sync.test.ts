@@ -11,6 +11,7 @@ import { commandAvailable } from "../runtime/poppler";
 import { SQLitePoliticalRepository } from "../storage/sqlite";
 import { syncPoliticalDisclosures, type SyncHouseSource, type SyncSenateSource } from "../sync";
 import type { SenateSearchRow } from "../sources/senate";
+import { testResolver } from "./helpers";
 
 const NOW = new Date("2024-07-02T12:00:00.000Z");
 
@@ -147,6 +148,7 @@ describe("syncPoliticalDisclosures", () => {
     const pdfFetches = { count: 0 };
     try {
       const first = await syncPoliticalDisclosures({
+        resolver: testResolver(),
         repository, cache: new LocalCache(cachePath("house")), completion,
         sinceYear: 2024, chamber: "house", acceptSenateTerms: false, now: NOW,
         sources: { house: houseSource(pdfFetches) },
@@ -166,6 +168,7 @@ describe("syncPoliticalDisclosures", () => {
 
       const callsAfterFirstRun = completion.calls;
       const second = await syncPoliticalDisclosures({
+        resolver: testResolver(),
         repository, cache: new LocalCache(cachePath("house")), completion,
         sinceYear: 2024, chamber: "house", acceptSenateTerms: false, now: NOW,
         sources: { house: houseSource(pdfFetches) },
@@ -186,6 +189,7 @@ describe("syncPoliticalDisclosures", () => {
     const pdfFetches = { count: 0 };
     try {
       const summary = await syncPoliticalDisclosures({
+        resolver: testResolver(),
         repository, cache: new LocalCache(cachePath("dry")), completion,
         sinceYear: 2024, chamber: "house", acceptSenateTerms: false, now: NOW, dryRun: true,
         sources: { house: houseSource(pdfFetches) },
@@ -210,6 +214,7 @@ describe("syncPoliticalDisclosures", () => {
     const pdfFetches = { count: 0 };
     try {
       const failing = await syncPoliticalDisclosures({
+        resolver: testResolver(),
         repository, cache: new LocalCache(cachePath("retry")),
         completion: new ScriptedCompletion({ "20018253": [BAD_TYPE_ROW] }),
         sinceYear: 2024, chamber: "house", maxFilings: 1, acceptSenateTerms: false, now: NOW,
@@ -222,6 +227,7 @@ describe("syncPoliticalDisclosures", () => {
       expect(afterFailure.trades).toHaveLength(0);
 
       const retrying = await syncPoliticalDisclosures({
+        resolver: testResolver(),
         repository, cache: new LocalCache(cachePath("retry")),
         completion: new ScriptedCompletion({ "20018253": [EXTRACTED_ROW] }),
         sinceYear: 2024, chamber: "house", maxFilings: 1, acceptSenateTerms: false, now: NOW,
@@ -242,6 +248,7 @@ describe("syncPoliticalDisclosures", () => {
     const htmlFetches = { count: 0 };
     try {
       const summary = await syncPoliticalDisclosures({
+        resolver: testResolver(),
         repository, cache: new LocalCache(cachePath("senate")),
         sinceYear: 2024, chamber: "senate", acceptSenateTerms: true, now: NOW,
         sources: { senate: senateSource(htmlFetches) },
@@ -258,6 +265,7 @@ describe("syncPoliticalDisclosures", () => {
       expect(snapshot.events).toHaveLength(1);
 
       const second = await syncPoliticalDisclosures({
+        resolver: testResolver(),
         repository, cache: new LocalCache(cachePath("senate")),
         sinceYear: 2024, chamber: "senate", acceptSenateTerms: true, now: NOW,
         sources: { senate: senateSource(htmlFetches) },
@@ -276,6 +284,7 @@ describe("syncPoliticalDisclosures", () => {
     const repository = new SQLitePoliticalRepository(dbPath("terms"));
     try {
       await expect(syncPoliticalDisclosures({
+        resolver: testResolver(),
         repository, cache: new LocalCache(cachePath("terms")),
         sinceYear: 2024, chamber: "senate", acceptSenateTerms: false, now: NOW,
         sources: { senate: senateSource({ count: 0 }) },
@@ -294,6 +303,7 @@ describe("syncPoliticalDisclosures", () => {
     };
     try {
       const summary = await syncPoliticalDisclosures({
+        resolver: testResolver(),
         repository, cache: new LocalCache(cachePath("senate-year")),
         sinceYear: 2024, year: 2024, chamber: "senate", acceptSenateTerms: true, now: NOW,
         sources: { senate: {
@@ -319,6 +329,7 @@ describe("syncPoliticalDisclosures", () => {
     const pdfFetches = { count: 0 };
     try {
       const summary = await syncPoliticalDisclosures({
+        resolver: testResolver(),
         repository, cache: new LocalCache(cachePath("max")),
         completion: new ScriptedCompletion({ "20018253": [EXTRACTED_ROW] }),
         sinceYear: 2024, chamber: "house", maxFilings: 1, acceptSenateTerms: false, now: NOW,

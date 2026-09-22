@@ -20,6 +20,8 @@ import {
   type ReadPass,
   type ScanPageImages,
 } from "./extraction";
+import { identifyFilingRows } from "./identity/apply";
+import type { MemberResolver } from "./identity/resolve";
 import { auditPoliticalIntegrity, type PoliticalIntegrityReport } from "./integrity";
 import { parseSlashDate } from "./lake/dates";
 import {
@@ -85,6 +87,8 @@ export interface SyncSources {
 
 export interface SyncOptions {
   repository: PoliticalRepository;
+  /** Identifies each filing's member of Congress (`loadLegislators` + `MemberResolver`). */
+  resolver: MemberResolver;
   cache: LocalCache;
   completion?: CompletionClient;
   ocr?: OcrClient;
@@ -342,6 +346,8 @@ export async function syncPoliticalDisclosures(options: SyncOptions): Promise<Sy
   const model = options.model ?? "google/gemini-3.1-flash-lite";
   const chamber = options.chamber ?? "both";
   const max = options.maxFilings ?? Number.POSITIVE_INFINITY;
+  // New member data or overrides move identities of filings this run will not touch.
+  if (!options.dryRun) await options.repository.reidentify(options.resolver);
   const existing = await options.repository.snapshot();
   const known = new Map(existing.filings.map((filing) => [key(filing), filing]));
   const shouldProcess = (candidate: { chamber: PoliticalChamber; docId: string }): boolean => known.get(key(candidate))?.extractionStatus !== "ok";
@@ -354,7 +360,7 @@ export async function syncPoliticalDisclosures(options: SyncOptions): Promise<Sy
   const indexed: Array<{ chamber: PoliticalChamber; docId: string }> = [];
 
   const commit = async (rows: PoliticalFilingRows): Promise<void> => {
-    if (!options.dryRun) await options.repository.replaceFilings([rows], runId);
+    if (!options.dryRun) await options.repository.replaceFilings([identifyFilingRows(rows, options.resolver)], runId);
     processed += 1;
     rows.filing.extractionStatus === "ok" ? succeeded += 1 : failed += 1;
     options.onProgress?.({ stage: "commit", chamber: rows.filing.chamber, docId: rows.filing.docId, message: rows.filing.extractionStatus });
@@ -440,7 +446,10 @@ export async function syncPoliticalDisclosures(options: SyncOptions): Promise<Sy
     }
 
     const final = options.dryRun ? null : await options.repository.snapshot();
-    const audit = final ? auditPoliticalIntegrity({ now, filings: final.filings, trades: final.trades, events: final.events, indexed }) : null;
+    const audit = final ? auditPoliticalIntegrity({
+      now, filings: final.filings, trades: final.trades, events: final.events, indexed,
+      staleOverrides: overrideLabels(options.resolver.staleOverrides(final.filings)),
+    }) : null;
     const summary: SyncSummary = { runId, discovered, planned, processed, succeeded, failed, skipped, audit };
     if (!options.dryRun) await options.repository.recordRun({ runId, startedAt, finishedAt: new Date(), status: audit?.passed === false ? "failed" : "ok", detail: JSON.stringify(summary) });
     return summary;
@@ -450,7 +459,18 @@ export async function syncPoliticalDisclosures(options: SyncOptions): Promise<Sy
   }
 }
 
-export async function auditPoliticalRepository(repository: PoliticalRepository, now = new Date()): Promise<PoliticalIntegrityReport> {
+function overrideLabels(entries: ReturnType<MemberResolver["staleOverrides"]>): string[] {
+  return entries.map((entry) => `${entry.chamber}:${entry.docId} ${entry.filerFirst} ${entry.filerLast}`);
+}
+
+export async function auditPoliticalRepository(
+  repository: PoliticalRepository,
+  now = new Date(),
+  resolver?: MemberResolver,
+): Promise<PoliticalIntegrityReport> {
   const snapshot = await repository.snapshot();
-  return auditPoliticalIntegrity({ now, filings: snapshot.filings, trades: snapshot.trades, events: snapshot.events });
+  return auditPoliticalIntegrity({
+    now, filings: snapshot.filings, trades: snapshot.trades, events: snapshot.events,
+    ...(resolver ? { staleOverrides: overrideLabels(resolver.staleOverrides(snapshot.filings)) } : {}),
+  });
 }

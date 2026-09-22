@@ -1,4 +1,6 @@
 import type { PTR_OWNERS } from "../extraction";
+import type { IdentifiedFilingRow, IdentifiedTradeRow } from "../identity/apply";
+import type { IdentitySource } from "../identity/types";
 
 export const POLITICAL_FILINGS_PREFIX = "political_filings";
 export const POLITICAL_TRADES_PREFIX = "political_trades";
@@ -103,6 +105,11 @@ export interface PoliticalTradeEventRow {
   sourceRowIndex: number;
   sourceUrl: string;
   contributorRowIds: string;
+  /** `member:<bioguide>`: events exist only for members of Congress. */
+  filerKey: string;
+  memberId: string | null;
+  displayName: string;
+  identitySource: IdentitySource;
 }
 
 export interface PoliticalFilingRows {
@@ -111,21 +118,24 @@ export interface PoliticalFilingRows {
 }
 
 export interface PoliticalLakeSnapshot {
-  filings: PoliticalFilingRow[];
-  trades: PoliticalTradeRow[];
+  filings: IdentifiedFilingRow[];
+  trades: IdentifiedTradeRow[];
   events: PoliticalTradeEventRow[];
 }
 
-export const POLITICAL_FILINGS_COLUMNS: Readonly<Record<keyof PoliticalFilingRow, string>> = {
+/** Identity columns every published table carries, derived from the filing. */
+const IDENTITY_COLUMNS = { filerKey: "VARCHAR", memberId: "VARCHAR", displayName: "VARCHAR", identitySource: "VARCHAR" } as const;
+
+export const POLITICAL_FILINGS_COLUMNS: Readonly<Record<keyof IdentifiedFilingRow, string>> = {
   chamber: "VARCHAR", docId: "VARCHAR", filerFirst: "VARCHAR", filerLast: "VARCHAR",
   filerSuffix: "VARCHAR", stateDistrict: "VARCHAR", filingDate: "DATE", availableAt: "TIMESTAMP",
   availabilitySource: "VARCHAR", sourceUrl: "VARCHAR", rawArchiveKey: "VARCHAR", rawSha256: "VARCHAR",
   parseMethod: "VARCHAR", extractionStatus: "VARCHAR", failureReason: "VARCHAR", extractedRows: "INTEGER",
   extractionModel: "VARCHAR", contractVersion: "VARCHAR", ocrArchiveKey: "VARCHAR",
-  amendedReportDate: "DATE", reportDate: "DATE", processedAt: "TIMESTAMP",
+  amendedReportDate: "DATE", reportDate: "DATE", processedAt: "TIMESTAMP", ...IDENTITY_COLUMNS,
 };
 
-export const POLITICAL_TRADES_COLUMNS: Readonly<Record<keyof PoliticalTradeRow, string>> = {
+export const POLITICAL_TRADES_COLUMNS: Readonly<Record<keyof IdentifiedTradeRow, string>> = {
   chamber: "VARCHAR", docId: "VARCHAR", rowIndex: "INTEGER", sourceTransactionId: "VARCHAR",
   filerFirst: "VARCHAR", filerLast: "VARCHAR", owner: "VARCHAR", ownerCodeRaw: "VARCHAR",
   action: "VARCHAR", partialSale: "BOOLEAN", actionCodeRaw: "VARCHAR", transactionDate: "DATE",
@@ -134,7 +144,7 @@ export const POLITICAL_TRADES_COLUMNS: Readonly<Record<keyof PoliticalTradeRow, 
   resolutionStatus: "VARCHAR", resolutionReason: "VARCHAR", assetTypeCode: "VARCHAR",
   assetTypeLabel: "VARCHAR", amountBracket: "VARCHAR", amountLow: "DOUBLE", amountHigh: "DOUBLE",
   capGainsOver200: "BOOLEAN", comment: "VARCHAR", filingStatus: "VARCHAR", sourceUrl: "VARCHAR",
-  rawArchiveKey: "VARCHAR", rawSha256: "VARCHAR",
+  rawArchiveKey: "VARCHAR", rawSha256: "VARCHAR", ...IDENTITY_COLUMNS,
 };
 
 export const POLITICAL_TRADE_EVENTS_COLUMNS: Readonly<Record<keyof PoliticalTradeEventRow, string>> = {
@@ -143,7 +153,7 @@ export const POLITICAL_TRADE_EVENTS_COLUMNS: Readonly<Record<keyof PoliticalTrad
   sourceTransactionId: "VARCHAR", assetDescription: "VARCHAR", assetTypeCode: "VARCHAR",
   assetTypeLabel: "VARCHAR", amountLow: "DOUBLE", amountHigh: "DOUBLE", firstAvailableAt: "TIMESTAMP",
   availableAt: "TIMESTAMP", supersededAt: "TIMESTAMP", sourceDocId: "VARCHAR", sourceRowIndex: "INTEGER",
-  sourceUrl: "VARCHAR", contributorRowIds: "VARCHAR",
+  sourceUrl: "VARCHAR", contributorRowIds: "VARCHAR", ...IDENTITY_COLUMNS,
 };
 
 export const POLITICAL_ORDER_BY = "filerLast, availableAt";

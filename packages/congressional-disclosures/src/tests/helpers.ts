@@ -1,3 +1,6 @@
+import { identifyFilingRows, identifyPoliticalRows, type IdentifiedFilingRows } from "../identity/apply";
+import { MemberResolver } from "../identity/resolve";
+import type { Legislator, LegislatorsSnapshot, MemberOverride } from "../identity/types";
 import { PoliticalFilingRow, PoliticalFilingRows, PoliticalTradeRow } from "../lake/types";
 
 const PROCESSED_AT = new Date("2026-09-19T00:00:00.000Z");
@@ -89,4 +92,47 @@ export function filingRowsFixture(overrides: {
       })
     ),
   };
+}
+
+function rep(bioguide: string, first: string, last: string, state: string, district: number | null, start = "2001-01-03", end = "2027-01-03"): Legislator {
+  return {
+    bioguide, first, middle: null, nickname: null, last, officialFull: `${first} ${last}`,
+    terms: [{ type: "rep", start, end, state, district }],
+  };
+}
+
+/** The members the fixtures file as: a small, fixed stand-in for congress-legislators. */
+export const TEST_LEGISLATORS: LegislatorsSnapshot = {
+  commit: "0".repeat(40),
+  sha256: { current: "0".repeat(64), historical: "0".repeat(64) },
+  legislators: [
+    rep("P000197", "Nancy", "Pelosi", "CA", 12, "1987-06-02"),
+    rep("L000551", "Barbara", "Lee", "CA", 13, "1998-04-07"),
+    rep("H000338", "Orrin", "Hatch", "UT", null),
+    rep("F000062", "Dianne", "Feinstein", "CA", null),
+    {
+      bioguide: "E000001", first: "Jamie", middle: null, nickname: null, last: "Example", officialFull: "Jamie Example",
+      terms: [{ type: "sen", start: "2019-01-03", end: "2031-01-03", state: "ZZ", district: null }],
+    },
+    {
+      bioguide: "D000001", first: "Jane", middle: null, nickname: null, last: "Doe", officialFull: "Jane Doe",
+      terms: [{ type: "sen", start: "2019-01-03", end: "2031-01-03", state: "ZZ", district: null }],
+    },
+  ],
+};
+
+export function testResolver(overrides: readonly MemberOverride[] = []): MemberResolver {
+  return new MemberResolver(TEST_LEGISLATORS, overrides);
+}
+
+/** A fixture filing and its trades, identified against `TEST_LEGISLATORS`. */
+export function identifiedRowsFixture(overrides: Parameters<typeof filingRowsFixture>[0] = {}): IdentifiedFilingRows {
+  return identifyFilingRows(filingRowsFixture(overrides), testResolver());
+}
+
+export function identifiedLake(
+  filings: readonly PoliticalFilingRow[],
+  trades: readonly PoliticalTradeRow[],
+): ReturnType<typeof identifyPoliticalRows> {
+  return identifyPoliticalRows(filings, trades, testResolver());
 }

@@ -1,3 +1,4 @@
+import { identifiedLake } from "../../tests/helpers";
 import { buildPoliticalTradeEvents } from "../events";
 import { senateElectronicFilingRows } from "../normalize";
 import {
@@ -35,10 +36,8 @@ describe("lake normalization golden cases", () => {
       amountHigh: 250_000,
     });
 
-    const events = buildPoliticalTradeEvents(
-      [...initial.trades, ...amended.trades],
-      [initial.filing, amended.filing],
-    );
+    const lake = identifiedLake([initial.filing, amended.filing], [...initial.trades, ...amended.trades]);
+    const events = buildPoliticalTradeEvents(lake.trades, lake.filings);
     expect(events).toHaveLength(2);
     expect(events[0]).toMatchObject({
       version: 1,

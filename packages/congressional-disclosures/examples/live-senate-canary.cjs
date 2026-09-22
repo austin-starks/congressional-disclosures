@@ -4,9 +4,11 @@ const path = require("node:path");
 
 const {
   LocalCache,
+  MemberResolver,
   SQLitePoliticalRepository,
   SenateEfdSession,
   fetchSenateMedia,
+  loadLegislators,
   parseSlashDate,
   senateReportKind,
   syncPoliticalDisclosures,
@@ -24,10 +26,12 @@ async function main() {
   if (!report) throw new Error(`No electronic Senate PTR found for ${year}`);
   const submitted = parseSlashDate(report.submittedDate);
   if (!submitted) throw new Error("Selected Senate PTR has no submitted date");
+  const resolver = new MemberResolver(await loadLegislators({ cacheDir: path.join(outputRoot, "legislators") }));
   const repository = new SQLitePoliticalRepository(path.join(outputRoot, "senate.sqlite"));
   try {
     const summary = await syncPoliticalDisclosures({
       repository,
+      resolver,
       cache: new LocalCache(path.join(outputRoot, "cache")),
       sinceYear: year,
       year,
@@ -45,6 +49,9 @@ async function main() {
     const snapshot = await repository.snapshot();
     if (summary.succeeded !== 1 || snapshot.filings.length !== 1 || snapshot.trades.length === 0) {
       throw new Error(`Live Senate canary did not produce rows: ${JSON.stringify(summary)}`);
+    }
+    if (!snapshot.filings[0].memberId) {
+      throw new Error(`Live Senate filer ${snapshot.filings[0].filerFirst} ${snapshot.filings[0].filerLast} matched no senator`);
     }
     process.stdout.write(`${JSON.stringify({
       reportId: snapshot.filings[0].docId,

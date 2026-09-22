@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.0 - 2026-09-22
+
+- Every filing is now matched to a member of Congress. The official indexes spell members inconsistently (the House Clerk has listed Rep. Scott Franklin as `Scott`, `C. Scott`, `Scott Scott` and `Scott Mr`), and filer identity was built from the printed name, so 41 members were split across 89 filer keys and repeats filed under a second spelling were never consolidated. Filings are matched deterministically against the public-domain congress-legislators data: everyone who had served in the filing's seat or chamber by its filing date, after accents, honorifics and credentials are removed, ties broken on given names and then on the most recent service. Against the published snapshot, 10,806 of 10,809 filings match; the rest are settled by three reviewed overrides.
+- **Breaking:** every table gains `member_id` (Bioguide ID), `display_name` (the official name), and `identity_source`, and `filer_key` becomes `member:<bioguide>` for members, one key across both chambers. `filer_first` and `filer_last` still hold the name as filed.
+- **Breaking:** only members of Congress have `political_trade_events`. Filings by people who never served, such as a House committee employee's report that reached the member index, stay in `political_filings` and `political_trades` with `identity_source = 'non_member'`.
+- Events consolidate per member. On the published snapshot this merges five repeats filed under another spelling of a member's name, links one Senate correction to its original, and drops four trades by a committee employee: 179,004 event versions become 178,996.
+- **Breaking:** `SyncOptions` requires a `resolver`, and `PoliticalRepository` gains `reidentify`, which re-derives identity when the member data or the overrides change. A 1.x SQLite database gains the identity columns in place and is re-identified on its next `sync`. `download` refuses a snapshot published before 2.0.
+- `sync` downloads congress-legislators once per upstream commit and caches it; `--legislators-commit` pins one. When GitHub cannot be reached, the last cached commit is used.
+- The audit fails a member split across filer keys, an event from a non-member, and an override its own proving filing no longer matches, and reports unresolved filers without failing. An override whose filing is not in the lake is not judged, so a partial sync never fails on one. `status` reports members and unresolved filings.
+- Event consolidation looks up each filer's open events by transaction ID, ticker and date instead of scanning all of them, which made a member with 40,782 trades quadratic: rebuilding the full lake's events went from 629 seconds to 0.4 seconds, with byte-identical output.
+- Exported `MemberResolver`, `loadLegislators`, `legislatorsFromFiles`, `identifyPoliticalRows`, `identifyFilingRows`, `MEMBER_OVERRIDES` and the identity types from `congressional-disclosures/lake`. Removed `politicalFilerKey`.
+
 ## 1.3.0 - 2026-09-22
 
 - A scanned filing about to fail for a row with no asset name gets one repair read of that window, told which rows the reads left blank. Filers often mark a repeated asset with a ditto mark, "same", or an arrow drawn down the asset column instead of writing it again; both reads left those rows blank, and the whole filing failed (House 9108075 lost a DJIA option sale under a ditto mark, 8217760 its NetApp rows under an arrow).

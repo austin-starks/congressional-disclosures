@@ -4,7 +4,8 @@ import { join } from "node:path";
 
 import { buildPoliticalTradeEvents } from "../lake/events";
 import { SQLitePoliticalRepository } from "../storage/sqlite";
-import { filingFixture, filingRowsFixture, tradeFixture } from "./helpers";
+import { identifyFilingRows } from "../identity/apply";
+import { filingFixture, identifiedRowsFixture as filingRowsFixture, testResolver, tradeFixture } from "./helpers";
 
 let directory: string;
 
@@ -87,10 +88,10 @@ describe("SQLitePoliticalRepository", () => {
       await repo.replaceFilings([filingRowsFixture()], "run-1");
       const before = await repo.snapshot();
       // Two trades with the same row index violate the trade primary key mid-commit.
-      const broken = {
+      const broken = identifyFilingRows({
         filing: filingFixture({ docId: "20018500", filerLast: "Broken" }),
         trades: [tradeFixture({ docId: "20018500", rowIndex: 0 }), tradeFixture({ docId: "20018500", rowIndex: 0 })],
-      };
+      }, testResolver());
       await expect(repo.replaceFilings([broken], "run-2")).rejects.toThrow();
       const after = await repo.snapshot();
       expect(after.filings).toEqual(before.filings);
