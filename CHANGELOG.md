@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.0 - 2026-09-23
+
+- A Senate row whose Ticker column reads "--" takes its ticker from the head of Asset Name when eFD printed it there, as in "SPYM - Tradr 2X Long SPY Monthly ETF" or "BRK-B - Berkshire Hathaway Inc Class B". A Senate row has no transaction id, so events consolidate on ticker and date, and a row with no ticker could never join its amendment: both versions were published as separate events. Only Stock, Other and Cryptocurrency rows are read this way. A corporate bond names its issuer's ticker ("FIS - ... Rate/Coupon: 4.700%") and an exchange names two securities, so both keep a null ticker. 31 Senate rows in the published data have this shape; `assetDescription` keeps the name as filed.
+- Exported `senateTickerFromAssetName` from `congressional-disclosures/lake`.
+
 ## 2.1.0 - 2026-09-22
 
 - A scanned page tesseract reads no letters on at any turn now goes to the model to be turned upright, and is kept as rendered only when the model cannot orient it either. Every such page used to be kept as rendered, on the reasoning that it held no text. 200-dpi fax micro-print scores 0 at every turn while full of text, and sideways pages of it sent to OCR unturned came back as hallucinated column headers, so their rows were dropped without a failure: House 8219417 lost pages 4, 6, 8, 9 and 14 (201 rows published; 293 read with this fix). Of the 161 scanned filings extracted since the shortcut shipped, it is the one that lost rows.
