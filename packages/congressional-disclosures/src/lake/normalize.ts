@@ -215,6 +215,29 @@ export function senatePaperFilingRows(report: SenateReportSource, extraction: Se
     : { filing: { ...base, extractedRows: mapped.trades.length }, trades: mapped.trades };
 }
 
+/**
+ * eFD prints "--" in the Ticker column for some securities and puts the
+ * ticker at the head of Asset Name instead: "SPYM - Tradr 2X Long SPY
+ * Monthly ETF". Left null, the row can never consolidate with its amendment,
+ * because a Senate row has no transaction id and consolidation then keys on
+ * ticker and date. Only the first " - " splits, since the ticker itself may
+ * hold a hyphen ("BRK-B - Berkshire Hathaway Inc Class B").
+ *
+ * Two shapes are refused. A corporate bond names its issuer's ticker
+ * ("FIS - ... Rate/Coupon: 4.700%"), which would price the bond as the
+ * stock. An exchange names two securities in one row ("BBT.F - ...
+ * (Exchanged) TFC.F - ... (Received)") and has no single ticker.
+ */
+const SENATE_ASSET_NAME_TICKER = /^([A-Z][A-Z0-9.]{0,5}(?:-[A-Z])?) - \S/;
+const SENATE_EXCHANGE_MARKER = /\((?:Exchanged|Received)\)/;
+const SENATE_TICKERED_ASSET_TYPES = new Set(["Stock", "Other", "Cryptocurrency"]);
+
+export function senateTickerFromAssetName(assetName: string, assetType: string): string | null {
+  if (!SENATE_TICKERED_ASSET_TYPES.has(assetType)) return null;
+  if (SENATE_EXCHANGE_MARKER.test(assetName)) return null;
+  return SENATE_ASSET_NAME_TICKER.exec(assetName.trim())?.[1] ?? null;
+}
+
 export function senateElectronicFilingRows(report: SenateReportSource, transactions: readonly SenateElectronicTransaction[]): PoliticalFilingRows {
   const base = senateFilingRow(report, "html", "ok", null, 0);
   const problems: string[] = [];
@@ -230,13 +253,14 @@ export function senateElectronicFilingRows(report: SenateReportSource, transacti
     try { transactionDate = parseSlashDate(transaction.transactionDate); } catch (error) { problems.push(String(error)); }
     if (!action || !owner) return [];
     const bounds = ptrAmountBounds(transaction.amount);
+    const printedTicker = transaction.ticker ?? senateTickerFromAssetName(transaction.assetName, transaction.assetType);
     return [{
       chamber: "senate", docId: report.reportId, rowIndex, sourceTransactionId: null,
       filerFirst: report.firstName, filerLast: report.lastName, owner, ownerCodeRaw: transaction.owner,
       action: action.action, partialSale: action.partialSale, actionCodeRaw: transaction.transactionType,
       transactionDate, notificationDate: null, filingDate: base.filingDate, availableAt: base.availableAt,
       availabilitySource: SENATE_AVAILABILITY_SOURCE, assetDescription: transaction.assetName,
-      printedTicker: transaction.ticker, ...unresolvedUntilResolution(transaction.ticker), assetTypeCode: null,
+      printedTicker, ...unresolvedUntilResolution(printedTicker), assetTypeCode: null,
       assetTypeLabel: transaction.assetType, amountBracket: transaction.amount, amountLow: bounds.low,
       amountHigh: bounds.high, capGainsOver200: null, comment: transaction.comment,
       filingStatus: title && title.amendment !== "none" ? "Amended" : null,
