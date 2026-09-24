@@ -58,4 +58,35 @@ describe("lake normalization golden cases", () => {
       supersededAt: null,
     });
   });
+
+  test("an amendment public the same instant replaces the version instead of hiding it", () => {
+    // A version with supersededAt == availableAt can never be read: a
+    // point-in-time query wants `availableAt <= as_of AND supersededAt > as_of`
+    // and no date satisfies both. Two such rows shipped to the published lake,
+    // one of them a Tuberville trade, and the trade became invisible entirely
+    // because it had no other version.
+    const initial = senateElectronicFilingRows(initialReport, initialTransactions);
+    const amended = senateElectronicFilingRows(amendedReport, amendedTransactions);
+    const when = initial.filing.availableAt;
+    const sameInstant = { ...amended.filing, availableAt: when };
+    const sameInstantTrades = amended.trades.map((trade) => ({ ...trade, availableAt: when }));
+
+    const lake = identifiedLake(
+      [initial.filing, sameInstant],
+      [...initial.trades, ...sameInstantTrades],
+    );
+    const events = buildPoliticalTradeEvents(lake.trades, lake.filings);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      version: 1,
+      availableAt: when,
+      supersededAt: null,
+      amountLow: 100_001,
+      amountHigh: 250_000,
+    });
+    for (const event of events) {
+      expect(event.supersededAt === null || event.supersededAt > event.availableAt).toBe(true);
+    }
+  });
 });

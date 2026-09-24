@@ -176,8 +176,17 @@ export function buildPoliticalTradeEvents(trades: readonly IdentifiedTradeRow[],
     if (corrected) {
       const previous = corrected.versions[corrected.versions.length - 1];
       if (!previous) throw new Error(`Event ${corrected.eventId} has no current version`);
-      previous.supersededAt = row.availableAt;
-      corrected.versions.push(versionRow(corrected, previous.version + 1, row));
+      if (row.availableAt <= previous.availableAt) {
+        // A correction public no later than the version it corrects means that
+        // version never had a window: a point-in-time read wants
+        // `availableAt <= as_of AND supersededAt > as_of`, which no date
+        // satisfies when the two are equal. Replace it in place, keeping its
+        // version number, because no reader could have seen the old values.
+        corrected.versions[corrected.versions.length - 1] = versionRow(corrected, previous.version, row);
+      } else {
+        previous.supersededAt = row.availableAt;
+        corrected.versions.push(versionRow(corrected, previous.version + 1, row));
+      }
       corrected.currentDocIds = new Set([row.docId]);
       corrected.allDocIds.add(row.docId);
       unindexRoles(index, corrected);
