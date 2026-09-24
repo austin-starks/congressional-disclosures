@@ -1,6 +1,6 @@
 {
   "name": "congressional-disclosures",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "private": true,
   "description": "Build a queryable SQLite lake of U.S. congressional trading disclosures from official House and Senate sources.",
   "license": "MIT",

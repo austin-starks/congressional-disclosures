@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.1 - 2026-09-23
+
+- An amendment that became public at the same instant as the version it corrects set that version's `supersededAt` to its own `availableAt`, so the two were equal. A point-in-time read wants `availableAt <= as_of AND supersededAt > as_of`, which no date satisfies when they match, so the version was unreadable at every instant. Two rows in the published lake were in that state and each was the only version of its trade, so the trade was invisible entirely: a John Hoeven WTW row from 2019-05-09 and a Tommy Tuberville OC row whose v1 is absent, leaving v2 self-superseded. Such a version was never observable, so it is now replaced in place keeping its version number; a correction that arrives strictly later still supersedes and appends.
+
 ## 2.2.0 - 2026-09-23
 
 - A Senate row whose Ticker column reads "--" takes its ticker from the head of Asset Name when eFD printed it there, as in "SPYM - Tradr 2X Long SPY Monthly ETF" or "BRK-B - Berkshire Hathaway Inc Class B". A Senate row has no transaction id, so events consolidate on ticker and date, and a row with no ticker could never join its amendment: both versions were published as separate events. Only Stock, Other and Cryptocurrency rows are read this way. A corporate bond names its issuer's ticker ("FIS - ... Rate/Coupon: 4.700%") and an exchange names two securities, so both keep a null ticker. 31 Senate rows in the published data have this shape; `assetDescription` keeps the name as filed.
