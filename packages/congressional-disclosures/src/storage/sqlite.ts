@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS political_trades (
 CREATE TABLE IF NOT EXISTS political_trade_events (
   event_id TEXT NOT NULL, version INTEGER NOT NULL, chamber TEXT NOT NULL, filer_first TEXT NOT NULL,
   filer_last TEXT NOT NULL, owner TEXT NOT NULL, action TEXT NOT NULL, partial_sale INTEGER NOT NULL,
-  transaction_date TEXT, ticker TEXT, source_transaction_id TEXT, asset_description TEXT NOT NULL,
+  transaction_date TEXT, ticker TEXT, source_transaction_id TEXT, asset_description TEXT NOT NULL, comment TEXT,
   asset_type_code TEXT, asset_type_label TEXT, amount_low REAL, amount_high REAL,
   first_available_at TEXT NOT NULL, available_at TEXT NOT NULL, superseded_at TEXT,
   source_doc_id TEXT NOT NULL, source_row_index INTEGER NOT NULL, source_url TEXT NOT NULL,
@@ -86,7 +86,7 @@ INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (2, CURRENT_
 const IDENTITY = "filer_key, member_id, display_name, identity_source";
 const FILING_COLUMNS = `chamber, doc_id, filer_first, filer_last, filer_suffix, state_district, filing_date, available_at, availability_source, source_url, raw_archive_key, raw_sha256, parse_method, extraction_status, failure_reason, extracted_rows, extraction_model, contract_version, ocr_archive_key, amended_report_date, report_date, processed_at, ${IDENTITY}`;
 const TRADE_COLUMNS = `chamber, doc_id, row_index, source_transaction_id, filer_first, filer_last, owner, owner_code_raw, action, partial_sale, action_code_raw, transaction_date, notification_date, filing_date, available_at, availability_source, asset_description, printed_ticker, resolved_ticker, resolution_status, resolution_reason, asset_type_code, asset_type_label, amount_bracket, amount_low, amount_high, cap_gains_over_200, comment, filing_status, source_url, raw_archive_key, raw_sha256, ${IDENTITY}`;
-const EVENT_COLUMNS = `event_id, version, chamber, filer_first, filer_last, owner, action, partial_sale, transaction_date, ticker, source_transaction_id, asset_description, asset_type_code, asset_type_label, amount_low, amount_high, first_available_at, available_at, superseded_at, source_doc_id, source_row_index, source_url, contributor_row_ids, ${IDENTITY}`;
+const EVENT_COLUMNS = `event_id, version, chamber, filer_first, filer_last, owner, action, partial_sale, transaction_date, ticker, source_transaction_id, asset_description, comment, asset_type_code, asset_type_label, amount_low, amount_high, first_available_at, available_at, superseded_at, source_doc_id, source_row_index, source_url, contributor_row_ids, ${IDENTITY}`;
 
 function iso(value: Date): string { return value.toISOString(); }
 function date(value: unknown): Date { return new Date(String(value)); }
@@ -163,6 +163,7 @@ function eventFromDb(raw: unknown): PoliticalTradeEventRow {
     action: String(row.action) as PoliticalTradeEventRow["action"], partialSale: Boolean(row.partial_sale),
     transactionDate: textOrNull(row.transaction_date), ticker: textOrNull(row.ticker),
     sourceTransactionId: textOrNull(row.source_transaction_id), assetDescription: String(row.asset_description),
+    comment: textOrNull(row.comment),
     assetTypeCode: textOrNull(row.asset_type_code), assetTypeLabel: textOrNull(row.asset_type_label),
     amountLow: numberOrNull(row.amount_low), amountHigh: numberOrNull(row.amount_high), firstAvailableAt: date(row.first_available_at),
     availableAt: date(row.available_at), supersededAt: row.superseded_at === null ? null : date(row.superseded_at),
@@ -189,7 +190,7 @@ function tradeValues(row: IdentifiedTradeRow): SQLInputValue[] {
 
 function eventValues(row: PoliticalTradeEventRow): SQLInputValue[] {
   return [row.eventId, row.version, row.chamber, row.filerFirst, row.filerLast, row.owner, row.action,
-    Number(row.partialSale), row.transactionDate, row.ticker, row.sourceTransactionId, row.assetDescription,
+    Number(row.partialSale), row.transactionDate, row.ticker, row.sourceTransactionId, row.assetDescription, row.comment ?? null,
     row.assetTypeCode, row.assetTypeLabel, row.amountLow, row.amountHigh, iso(row.firstAvailableAt), iso(row.availableAt),
     row.supersededAt ? iso(row.supersededAt) : null, row.sourceDocId, row.sourceRowIndex, row.sourceUrl, row.contributorRowIds,
     ...identityValues(row)];
@@ -214,6 +215,21 @@ export class SQLitePoliticalRepository implements PoliticalRepository {
       }
     }
     this.db.exec(IDENTITY_INDEXES);
+    const eventColumns = new Set(this.db.prepare("PRAGMA table_info(political_trade_events)").all()
+      .map((column) => String(rowObject(column).name)));
+    if (!eventColumns.has("comment")) {
+      this.db.exec("ALTER TABLE political_trade_events ADD COLUMN comment TEXT");
+      this.db.exec(`
+        UPDATE political_trade_events
+        SET comment = (
+          SELECT trade.comment FROM political_trades trade
+          WHERE trade.chamber = political_trade_events.chamber
+            AND trade.doc_id = political_trade_events.source_doc_id
+            AND trade.row_index = political_trade_events.source_row_index
+        )
+      `);
+    }
+    this.db.exec("INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (3, CURRENT_TIMESTAMP)");
   }
 
   async snapshot(): Promise<PoliticalLakeSnapshot> {
@@ -248,7 +264,7 @@ export class SQLitePoliticalRepository implements PoliticalRepository {
   async replaceSnapshot(snapshot: PoliticalLakeSnapshot): Promise<void> {
     const insertFiling = this.db.prepare(`INSERT INTO political_filings (${FILING_COLUMNS}) VALUES ${placeholders(26)}`);
     const insertTrade = this.db.prepare(`INSERT INTO political_trades (${TRADE_COLUMNS}) VALUES ${placeholders(36)}`);
-    const insertEvent = this.db.prepare(`INSERT INTO political_trade_events (${EVENT_COLUMNS}) VALUES ${placeholders(27)}`);
+    const insertEvent = this.db.prepare(`INSERT INTO political_trade_events (${EVENT_COLUMNS}) VALUES ${placeholders(28)}`);
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.db.exec("DELETE FROM political_trade_events; DELETE FROM political_trades; DELETE FROM political_filings;");
@@ -266,7 +282,7 @@ export class SQLitePoliticalRepository implements PoliticalRepository {
     if (updates.length === 0) return;
     const insertFiling = this.db.prepare(`INSERT INTO political_filings (${FILING_COLUMNS}) VALUES ${placeholders(26)}`);
     const insertTrade = this.db.prepare(`INSERT INTO political_trades (${TRADE_COLUMNS}) VALUES ${placeholders(36)}`);
-    const insertEvent = this.db.prepare(`INSERT INTO political_trade_events (${EVENT_COLUMNS}) VALUES ${placeholders(27)}`);
+    const insertEvent = this.db.prepare(`INSERT INTO political_trade_events (${EVENT_COLUMNS}) VALUES ${placeholders(28)}`);
     const deleteFiling = this.db.prepare("DELETE FROM political_filings WHERE chamber = ? AND doc_id = ?");
     const previousKey = this.db.prepare("SELECT filer_key FROM political_filings WHERE chamber = ? AND doc_id = ?");
     const deleteEvents = this.db.prepare("DELETE FROM political_trade_events WHERE filer_key = ?");

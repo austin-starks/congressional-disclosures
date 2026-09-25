@@ -34,7 +34,7 @@ function fixtureSnapshot(): CongressionalDatasetSnapshot {
   };
 }
 
-const lake = identifiedLake([filingFixture()], [tradeFixture()]);
+const lake = identifiedLake([filingFixture()], [tradeFixture({ comment: "Filed option terms" })]);
 const [filing] = lake.filings;
 const [trade] = lake.trades;
 if (!filing || !trade) throw new Error("identified fixture was not created");
@@ -71,6 +71,7 @@ describe("public dataset SQLite materialization", () => {
       const lake = await repository.snapshot();
       expect(lake.events[0]).toMatchObject({ filerLast: "Pelosi", ticker: "AAPL", action: "purchase" });
       expect(lake.events[0]?.transactionDate).toBe("2024-06-10");
+      expect(lake.events[0]?.comment).toBe("Filed option terms");
     } finally {
       await repository.close();
     }

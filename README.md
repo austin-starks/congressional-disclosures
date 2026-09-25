@@ -277,6 +277,11 @@ instead of double-counting them.
 | `political_trades` | One transaction row printed on a filing | Inspecting exactly what a document reported |
 | `political_trade_events` | One version of a consolidated economic event | Counts, aggregates, point-in-time research, and downstream signals |
 
+Event rows include a nullable `comment` copied from the extracted transaction
+row. It may contain an option's strike, expiration, or contract count, but it is
+unparsed filing text and does not establish a unique option contract or holding.
+Older published snapshots read this field as null.
+
 Private tables record schema migrations, sync runs, and per-filing receipts.
 Original documents and paid responses live in the content-addressed cache
 selected by `--cache-dir`; large blobs are not stored inside SQLite.

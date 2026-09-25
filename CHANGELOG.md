@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.2 - 2026-09-24
+
+- Canonical political trade events now retain the extracted filing comment, which can contain option strike, expiration, and contract quantity. Existing SQLite event tables gain the column in place and backfill it from their raw trade rows; older published snapshots still read with a null comment. This preserves evidence for later contract-level modeling without changing event matching or trade execution.
+
 ## 2.2.1 - 2026-09-23
 
 - An amendment that became public at the same instant as the version it corrects set that version's `supersededAt` to its own `availableAt`, so the two were equal. A point-in-time read wants `availableAt <= as_of AND supersededAt > as_of`, which no date satisfies when they match, so the version was unreadable at every instant. Two rows in the published lake were in that state and each was the only version of its trade, so the trade was invisible entirely: a John Hoeven WTW row from 2019-05-09 and a Tommy Tuberville OC row whose v1 is absent, leaving v2 self-superseded. Such a version was never observable, so it is now replaced in place keeping its version number; a correction that arrives strictly later still supersedes and appends.

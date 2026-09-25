@@ -94,6 +94,8 @@ export interface PoliticalTradeEventRow {
   ticker: string | null;
   sourceTransactionId: string | null;
   assetDescription: string;
+  /** Comment text retained from extraction, including option terms when captured. */
+  comment?: string | null;
   assetTypeCode: string | null;
   assetTypeLabel: string | null;
   amountLow: number | null;
@@ -150,7 +152,7 @@ export const POLITICAL_TRADES_COLUMNS: Readonly<Record<keyof IdentifiedTradeRow,
 export const POLITICAL_TRADE_EVENTS_COLUMNS: Readonly<Record<keyof PoliticalTradeEventRow, string>> = {
   eventId: "VARCHAR", version: "INTEGER", chamber: "VARCHAR", filerFirst: "VARCHAR", filerLast: "VARCHAR",
   owner: "VARCHAR", action: "VARCHAR", partialSale: "BOOLEAN", transactionDate: "DATE", ticker: "VARCHAR",
-  sourceTransactionId: "VARCHAR", assetDescription: "VARCHAR", assetTypeCode: "VARCHAR",
+  sourceTransactionId: "VARCHAR", assetDescription: "VARCHAR", comment: "VARCHAR", assetTypeCode: "VARCHAR",
   assetTypeLabel: "VARCHAR", amountLow: "DOUBLE", amountHigh: "DOUBLE", firstAvailableAt: "TIMESTAMP",
   availableAt: "TIMESTAMP", supersededAt: "TIMESTAMP", sourceDocId: "VARCHAR", sourceRowIndex: "INTEGER",
   sourceUrl: "VARCHAR", contributorRowIds: "VARCHAR", ...IDENTITY_COLUMNS,

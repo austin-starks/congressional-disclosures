@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { buildPoliticalTradeEvents } from "../lake/events";
 import { SQLitePoliticalRepository } from "../storage/sqlite";
@@ -35,6 +36,45 @@ describe("SQLitePoliticalRepository", () => {
       expect(snapshot.trades[0]?.printedTicker).toBe("AAPL");
       expect(snapshot.events[0]?.eventId).toBe("house:20018253:0");
       expect(snapshot.events[0]?.ticker).toBe("AAPL");
+    } finally {
+      await repo.close();
+    }
+  });
+
+  test("restores option text when migrating an existing event table", async () => {
+    const path = join(directory, "event-comment-migration.sqlite");
+    const original = new SQLitePoliticalRepository(path);
+    await original.replaceFilings([filingRowsFixture({
+      trades: [{ comment: "50 NVDA Dec 2024 $120 calls" }],
+    })], "run-1");
+    await original.close();
+
+    const legacy = new DatabaseSync(path);
+    legacy.exec("ALTER TABLE political_trade_events DROP COLUMN comment");
+    legacy.close();
+
+    const migrated = new SQLitePoliticalRepository(path);
+    try {
+      const snapshot = await migrated.snapshot();
+      expect(snapshot.events[0]?.comment).toBe("50 NVDA Dec 2024 $120 calls");
+    } finally {
+      await migrated.close();
+    }
+  });
+
+  test("accepts event rows from callers that predate the comment field", async () => {
+    const repo = repository("legacy-event-input");
+    try {
+      const identified = filingRowsFixture({ trades: [{}] });
+      const event = buildPoliticalTradeEvents(identified.trades, [identified.filing])[0];
+      if (!event) throw new Error("fixture has no event");
+      const { comment: _comment, ...oldEvent } = event;
+      await repo.replaceSnapshot({
+        filings: [identified.filing],
+        trades: identified.trades,
+        events: [oldEvent],
+      });
+      expect((await repo.snapshot()).events[0]?.comment).toBeNull();
     } finally {
       await repo.close();
     }

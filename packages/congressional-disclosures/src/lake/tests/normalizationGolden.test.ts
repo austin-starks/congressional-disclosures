@@ -44,6 +44,7 @@ describe("lake normalization golden cases", () => {
       owner: "spouse",
       partialSale: true,
       ticker: "NVDA",
+      comment: "50 NVDA Dec 2024 $120 calls; partial sale",
       amountLow: 50_001,
       amountHigh: 100_000,
       supersededAt: amended.filing.availableAt,
@@ -51,6 +52,7 @@ describe("lake normalization golden cases", () => {
     expect(events[1]).toMatchObject({
       eventId: events[0]?.eventId,
       version: 2,
+      comment: "50 NVDA Dec 2024 $120 calls; corrected amount range",
       amountLow: 100_001,
       amountHigh: 250_000,
       firstAvailableAt: initial.filing.availableAt,

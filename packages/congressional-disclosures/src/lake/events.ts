@@ -104,6 +104,7 @@ function versionRow(event: Pick<OpenEvent, "eventId" | "firstAvailableAt">, vers
     eventId: event.eventId, version, chamber: row.chamber, filerFirst: row.filerFirst, filerLast: row.filerLast,
     owner: row.owner, action: row.action, partialSale: row.partialSale, transactionDate: row.transactionDate,
     ticker: eventTicker(row), sourceTransactionId: row.sourceTransactionId, assetDescription: row.assetDescription,
+    comment: row.comment,
     assetTypeCode: row.assetTypeCode, assetTypeLabel: row.assetTypeLabel, amountLow: row.amountLow,
     amountHigh: row.amountHigh, firstAvailableAt: event.firstAvailableAt, availableAt: row.availableAt,
     supersededAt: null, sourceDocId: row.docId, sourceRowIndex: row.rowIndex, sourceUrl: row.sourceUrl,

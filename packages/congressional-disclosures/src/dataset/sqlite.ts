@@ -217,6 +217,7 @@ function eventRow(value: unknown): PoliticalTradeEventRow {
     ticker: nullableString(row, "ticker"),
     sourceTransactionId: nullableString(row, "sourceTransactionId"),
     assetDescription: stringValue(row, "assetDescription"),
+    comment: nullableString(row, "comment"),
     assetTypeCode: nullableString(row, "assetTypeCode"),
     assetTypeLabel: nullableString(row, "assetTypeLabel"),
     amountLow: nullableNumber(row, "amountLow"),

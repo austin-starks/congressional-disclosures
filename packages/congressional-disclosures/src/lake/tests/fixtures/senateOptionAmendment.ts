@@ -22,7 +22,7 @@ export const initialTransaction = {
   assetType: "Stock Option",
   transactionType: "Sale (Partial)",
   amount: "$50,001 - $100,000",
-  comment: "Partial sale",
+  comment: "50 NVDA Dec 2024 $120 calls; partial sale",
 } satisfies SenateElectronicTransaction;
 
 export const initialTransactions = [initialTransaction] satisfies readonly SenateElectronicTransaction[];
@@ -41,5 +41,5 @@ export const amendedReport = {
 export const amendedTransactions = [{
   ...initialTransaction,
   amount: "$100,001 - $250,000",
-  comment: "Corrected amount range",
+  comment: "50 NVDA Dec 2024 $120 calls; corrected amount range",
 }] satisfies readonly SenateElectronicTransaction[];
