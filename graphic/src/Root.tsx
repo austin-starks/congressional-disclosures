@@ -2,6 +2,7 @@ import React from "react";
 import { Composition } from "remotion";
 
 import { Architecture } from "./Architecture";
+import { LINKEDIN_FILING_FRAMES, LinkedInFiling } from "./LinkedInFiling";
 import { ReadmeDemo } from "./ReadmeDemo";
 
 const FPS = 30;
@@ -27,6 +28,14 @@ export const Root: React.FC = () => (
       fps={FPS}
       width={1200}
       height={675}
+    />
+    <Composition
+      id="LinkedInFiling"
+      component={LinkedInFiling}
+      durationInFrames={LINKEDIN_FILING_FRAMES}
+      fps={FPS}
+      width={1080}
+      height={1350}
     />
   </>
 );
