@@ -15,3 +15,6 @@ graphic/out/*
 # Nothing in this repo reads a .env, and nothing should start.
 .env
 .env.*
+
+# Local download of the public HF dataset austin-starks/congressional-stock-trades.
+congressional-stock-trades/
