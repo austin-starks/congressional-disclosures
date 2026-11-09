@@ -7,7 +7,7 @@ from the official House Clerk and Senate eFD sources.
 [![CI](https://github.com/austin-starks/congressional-disclosures/actions/workflows/ci.yml/badge.svg)](https://github.com/austin-starks/congressional-disclosures/actions/workflows/ci.yml)
 [![npm downloads](https://img.shields.io/npm/dm/congressional-disclosures)](https://www.npmjs.com/package/congressional-disclosures)
 [![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/austin-starks/congressional-disclosures/blob/main/LICENSE)
-[![node](https://img.shields.io/badge/node-%3E%3D22.5-brightgreen)](https://nodejs.org/)
+[![node](https://img.shields.io/badge/node-%3E%3D22.12-brightgreen)](https://nodejs.org/)
 
 <p align="center">
   <a href="#get-a-queryable-sqlite-database">
@@ -161,7 +161,7 @@ matters; it records the snapshot you actually received.
 The one-command public snapshot above does not need this setup. Use this section
 only when you want to discover and extract the official filings yourself.
 
-Node.js 22.5 or newer is required. Use a stable Node release rather than an
+Node.js 22.12 or newer is required. Use a stable Node release rather than an
 alpha or nightly build. Install Poppler and Tesseract first:
 
 ```bash
@@ -180,6 +180,8 @@ export MISTRAL_API_KEY=...     # OCR for scanned/image filings
 
 npx congressional-disclosures doctor
 ```
+
+Live Senate sync requires Firefox. The CLI looks for Firefox in `/Applications` on macOS and Firefox ESR or Firefox in `/usr/bin` on Linux. For a custom installation, pass `--firefox-path /path/to/firefox`. Package consumers that open a `SenateEfdSession` directly should call `close()` in a `finally` block.
 
 `doctor` reports whether each executable and credential is present without
 printing credential values.

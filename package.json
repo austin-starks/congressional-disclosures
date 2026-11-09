@@ -1,6 +1,6 @@
 {
   "name": "congressional-disclosures",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "private": true,
   "description": "Build a queryable SQLite lake of U.S. congressional trading disclosures from official House and Senate sources.",
   "license": "MIT",
@@ -76,7 +76,7 @@
     "packages/*"
   ],
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
@@ -95,7 +95,8 @@
     "hyparquet-compressors": "^1.1.2",
     "jszip": "^3.10.2",
     "pdf-lib": "^1.17.1",
-    "sharp": "^0.35.4"
+    "puppeteer-core": "25.16.0",
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",

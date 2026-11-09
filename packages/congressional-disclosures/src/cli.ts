@@ -75,6 +75,7 @@ Sync options:
   --model MODEL                  OpenAI-compatible model slug
   --ocr-model MODEL              Mistral OCR model slug
   --accept-senate-terms          Accept the eFD prohibition agreement
+  --firefox-path FILE            Firefox executable for Senate sync
   --dry-run                      Discover and plan without provider calls or writes
 
 Environment:
@@ -203,6 +204,7 @@ async function main(): Promise<number> {
     const year = numberFlag(flags, "year");
     if (sinceYear === undefined) throw new Error("--since is required");
     const chamber = textFlag(flags, "chamber", "both");
+    const senateFirefoxPath = textFlag(flags, "firefox-path");
     if (chamber !== "house" && chamber !== "senate" && chamber !== "both") throw new Error("--chamber must be house, senate, or both");
     const cacheRoot = resolve(textFlag(flags, "cache-dir", "./.congressional-disclosures") ?? "./.congressional-disclosures");
     const cache = new LocalCache(cacheRoot);
@@ -234,6 +236,7 @@ async function main(): Promise<number> {
       ...(ocr ? { ocr } : {}),
       ...(maxFilings !== undefined ? { maxFilings } : {}),
       acceptSenateTerms: flags.has("accept-senate-terms"),
+      ...(senateFirefoxPath ? { senateFirefoxPath } : {}),
       dryRun: flags.has("dry-run"),
       onProgress: (progress) => process.stderr.write(`[${progress.chamber}] ${progress.docId ? `${progress.docId} ` : ""}${progress.message}\n`),
     });
