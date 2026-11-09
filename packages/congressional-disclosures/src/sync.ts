@@ -99,6 +99,7 @@ export interface SyncOptions {
   chamber?: PoliticalChamber | "both";
   maxFilings?: number;
   acceptSenateTerms?: boolean;
+  senateFirefoxPath?: string;
   dryRun?: boolean;
   now?: Date;
   onProgress?: (progress: SyncProgress) => void;
@@ -409,39 +410,46 @@ export async function syncPoliticalDisclosures(options: SyncOptions): Promise<Sy
     if (chamber !== "house" && processed < max) {
       if (!options.acceptSenateTerms) throw new Error("Senate sync requires --accept-senate-terms");
       options.onProgress?.({ stage: "discover", chamber: "senate", message: "opening Senate eFD session" });
-      const senateSource: SyncSenateSource = options.sources?.senate ?? await (async () => {
-        const session = await SenateEfdSession.open(true);
-        return {
-          search: (startDate: string) => session.searchPeriodicTransactionReports(startDate),
-          fetchReportHtml: (reportPath: string) => session.fetchReportHtml(reportPath),
+      let senateSource = options.sources?.senate;
+      let session: SenateEfdSession | undefined;
+      if (!senateSource) {
+        const ownedSession = await SenateEfdSession.open(true, options.senateFirefoxPath);
+        session = ownedSession;
+        senateSource = {
+          search: (startDate) => ownedSession.searchPeriodicTransactionReports(startDate),
+          fetchReportHtml: (reportPath) => ownedSession.fetchReportHtml(reportPath),
           fetchMedia: fetchSenateMedia,
         };
-      })();
-      const lastYear = options.year ?? now.getUTCFullYear();
-      const reports = (await senateSource.search(`01/01/${options.year ?? options.sinceYear}`))
-        .filter((report) => senateReportYear(report) <= lastYear);
-      discovered += reports.length;
-      const queue = reports.filter((report) => shouldProcess({ chamber: "senate", docId: senateReportId(report.reportPath) }));
-      skipped += reports.length - queue.length;
-      const selected = queue.slice(0, Math.max(0, max - processed));
-      planned += selected.length;
-      const unattemptedSenate = new Set(queue.slice(selected.length).map((report) => key({ chamber: "senate", docId: senateReportId(report.reportPath) })));
-      indexed.push(...reports
-        .map((report) => ({ chamber: "senate" as const, docId: senateReportId(report.reportPath) }))
-        .filter((candidate) => !unattemptedSenate.has(key(candidate))));
-      for (const report of selected) {
-        const docId = senateReportId(report.reportPath);
-        if (options.dryRun) {
-          options.onProgress?.({ stage: "download", chamber: "senate", docId, message: "planned (dry run)" });
-          continue;
+      }
+      try {
+        const lastYear = options.year ?? now.getUTCFullYear();
+        const reports = (await senateSource.search(`01/01/${options.year ?? options.sinceYear}`))
+          .filter((report) => senateReportYear(report) <= lastYear);
+        discovered += reports.length;
+        const queue = reports.filter((report) => shouldProcess({ chamber: "senate", docId: senateReportId(report.reportPath) }));
+        skipped += reports.length - queue.length;
+        const selected = queue.slice(0, Math.max(0, max - processed));
+        planned += selected.length;
+        const unattemptedSenate = new Set(queue.slice(selected.length).map((report) => key({ chamber: "senate", docId: senateReportId(report.reportPath) })));
+        indexed.push(...reports
+          .map((report) => ({ chamber: "senate" as const, docId: senateReportId(report.reportPath) }))
+          .filter((candidate) => !unattemptedSenate.has(key(candidate))));
+        for (const report of selected) {
+          const docId = senateReportId(report.reportPath);
+          if (options.dryRun) {
+            options.onProgress?.({ stage: "download", chamber: "senate", docId, message: "planned (dry run)" });
+            continue;
+          }
+          options.onProgress?.({ stage: "download", chamber: "senate", docId, message: "downloading official report" });
+          try {
+            await commit(await extractSenate(report, senateSource, options.completion, options.ocr, model, options.cache, now));
+          } catch (error) {
+            failed += 1;
+            options.onProgress?.({ stage: "extract", chamber: "senate", docId, message: `failed: ${message(error)}` });
+          }
         }
-        options.onProgress?.({ stage: "download", chamber: "senate", docId, message: "downloading official report" });
-        try {
-          await commit(await extractSenate(report, senateSource, options.completion, options.ocr, model, options.cache, now));
-        } catch (error) {
-          failed += 1;
-          options.onProgress?.({ stage: "extract", chamber: "senate", docId, message: `failed: ${message(error)}` });
-        }
+      } finally {
+        await session?.close();
       }
     }
 

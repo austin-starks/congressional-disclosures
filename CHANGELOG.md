@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.3 - 2026-11-08
+
+- Senate eFD discovery and report reads use one headless Firefox session to recover from HTTP 403 responses. Install Firefox for live Senate sync. Library callers opening a Senate session should close it in a `finally` block.
+
 ## 2.2.2 - 2026-09-24
 
 - Canonical political trade events now retain the extracted filing comment, which can contain option strike, expiration, and contract quantity. Existing SQLite event tables gain the column in place and backfill it from their raw trade rows; older published snapshots still read with a null comment. This preserves evidence for later contract-level modeling without changing event matching or trade execution.

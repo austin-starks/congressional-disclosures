@@ -1,4 +1,7 @@
+import { existsSync } from "node:fs";
+
 import { load } from "cheerio";
+import type { Browser, Page } from "puppeteer-core" with { "resolution-mode": "import" };
 import sharp from "sharp";
 
 import { parseSlashDate } from "../lake/dates";
@@ -8,6 +11,10 @@ const EFD_ORIGIN = "https://efdsearch.senate.gov";
 const HOME_PATH = "/search/home/";
 const SEARCH_PATH = "/search/";
 const REPORT_DATA_PATH = "/search/report/data/";
+const REQUEST_TIMEOUT_MS = 60_000;
+const SENSOR_SETTLE_MS = 5_000;
+const SENATE_REQUEST_RETRIES = 4;
+const SENATE_PAGE_SIZE = 100;
 const SENATE_MEDIA_ORIGINS = new Set([
   EFD_ORIGIN,
   "https://efd-media-public.senate.gov",
@@ -143,93 +150,182 @@ export function parseSenateElectronicPtr(html: string): SenateElectronicTransact
   });
 }
 
+export interface SenateSearchPage {
+  rows: SenateSearchRow[];
+}
+
+class SenateEfdHttpError extends Error {
+  constructor(readonly status: number, path: string) {
+    super(`Senate eFD ${path} returned HTTP ${status}`);
+  }
+}
+
+function validatedReportPath(value: string): string {
+  const url = new URL(value, EFD_ORIGIN);
+  if (url.origin !== EFD_ORIGIN || url.username || url.password || url.search || url.hash) {
+    throw new Error(`Untrusted Senate report URL: ${value}`);
+  }
+  senateReportId(url.pathname);
+  return url.pathname;
+}
+
 function reportPathFromLink(linkHtml: string): string {
   const href = load(linkHtml)("a").attr("href");
   if (!href) throw new Error("Senate search row has no report link");
-  return new URL(href, EFD_ORIGIN).pathname;
+  return validatedReportPath(href);
 }
 
 export class SenateEfdSession {
-  private readonly cookies = new Map<string, string>();
-  private constructor() {}
+  private closed = false;
 
-  static async open(acceptedTerms: boolean): Promise<SenateEfdSession> {
+  private constructor(private readonly browser: Browser, private readonly page: Page) {}
+
+  /** Opens a temporary Firefox session. Callers must close it when finished. */
+  static async open(acceptedTerms: boolean, firefoxExecutablePath?: string): Promise<SenateEfdSession> {
     if (!acceptedTerms) throw new Error("Senate access requires explicit acceptance of the eFD prohibition agreement");
-    const session = new SenateEfdSession();
-    await session.acceptAgreement();
-    return session;
-  }
-
-  private cookieHeader(): string {
-    return [...this.cookies].map(([name, value]) => `${name}=${value}`).join("; ");
-  }
-
-  private storeCookies(response: Response): void {
-    for (const cookie of response.headers.getSetCookie()) {
-      const [pair = ""] = cookie.split(";");
-      const separator = pair.indexOf("=");
-      if (separator > 0) this.cookies.set(pair.slice(0, separator).trim(), pair.slice(separator + 1).trim());
+    const defaultPaths = process.platform === "darwin"
+      ? ["/Applications/Firefox.app/Contents/MacOS/firefox"]
+      : process.platform === "linux" ? ["/usr/bin/firefox-esr", "/usr/bin/firefox"] : [];
+    const executablePath = firefoxExecutablePath ?? defaultPaths.find((path) => existsSync(path));
+    if (!executablePath) {
+      throw new Error("Senate eFD requires Firefox. Install it or supply its executable path (--firefox-path in the CLI)");
+    }
+    const { default: puppeteer } = await import("puppeteer-core");
+    const browser = await puppeteer.launch({
+      browser: "firefox",
+      executablePath,
+      headless: true,
+      timeout: REQUEST_TIMEOUT_MS,
+    });
+    try {
+      const page = await browser.newPage();
+      page.setDefaultNavigationTimeout(REQUEST_TIMEOUT_MS);
+      page.setDefaultTimeout(REQUEST_TIMEOUT_MS);
+      const session = new SenateEfdSession(browser, page);
+      await session.acceptProhibitionAgreement();
+      return session;
+    } catch (error) {
+      await browser.close().catch(() => undefined);
+      throw error;
     }
   }
 
-  private headers(referer: string): Record<string, string> {
-    return { Cookie: this.cookieHeader(), Referer: `${EFD_ORIGIN}${referer}` };
+  /** Idempotent cleanup also runs when a listing or report fails. */
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    await this.browser.close();
   }
 
-  private async acceptAgreement(): Promise<void> {
-    const home = await fetchWithRetry(`${EFD_ORIGIN}${HOME_PATH}`);
-    this.storeCookies(home);
-    const html = await home.text();
-    const token = load(html)('input[name="csrfmiddlewaretoken"]').attr("value");
-    if (!token) throw new Error("Senate eFD home page did not include a CSRF token");
-    const body = new URLSearchParams({ csrfmiddlewaretoken: token, prohibition_agreement: "1" });
-    const agreement = await fetchWithRetry(`${EFD_ORIGIN}${HOME_PATH}`, {
-      method: "POST", redirect: "manual", body,
-      headers: { ...this.headers(HOME_PATH), "Content-Type": "application/x-www-form-urlencoded" },
-    }, { acceptedStatuses: [302] });
-    this.storeCookies(agreement);
-    if (!this.cookies.has("csrftoken")) throw new Error("Senate eFD agreement did not leave a csrftoken cookie");
+  private async acceptProhibitionAgreement(): Promise<void> {
+    const home = await this.page.goto(`${EFD_ORIGIN}${HOME_PATH}`, { waitUntil: "networkidle2" });
+    if (home && !home.ok()) throw new SenateEfdHttpError(home.status(), HOME_PATH);
+    // networkidle2 alone resolves before the sensor finishes. Submitting then
+    // returns a blank 200 challenge instead of recording the agreement.
+    await new Promise<void>((resolve) => setTimeout(resolve, SENSOR_SETTLE_MS));
+    const [agreement] = await Promise.all([
+      this.page.waitForNavigation({ waitUntil: "networkidle2" }),
+      this.page.click("#agree_statement"),
+    ]);
+    if (agreement && !agreement.ok()) throw new SenateEfdHttpError(agreement.status(), HOME_PATH);
+    if (this.page.url() !== `${EFD_ORIGIN}${SEARCH_PATH}`) {
+      throw new Error("Senate eFD agreement did not reach the report search page");
+    }
+    const hasCsrf = await this.page.evaluate(() =>
+      document.cookie.split("; ").some((cookie) => cookie.startsWith("csrftoken=")),
+    );
+    if (!hasCsrf) throw new Error("Senate eFD agreement did not leave a csrftoken cookie");
   }
 
+  private async request(path: string, body?: string): Promise<string> {
+    if (this.closed) throw new Error("Senate eFD session is closed");
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const result = await this.page.evaluate(async (input) => {
+          const form = input.body === undefined ? undefined : new URLSearchParams(input.body);
+          if (form) {
+            const cookie = document.cookie.split("; ").find((entry) => entry.startsWith("csrftoken="));
+            if (!cookie) throw new Error("Senate eFD session lost its CSRF cookie");
+            form.set("csrfmiddlewaretoken", decodeURIComponent(cookie.slice("csrftoken=".length)));
+          }
+          const response = await fetch(input.path, {
+            method: form ? "POST" : "GET",
+            credentials: "same-origin",
+            ...(form ? {
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: form.toString(),
+            } : {}),
+            signal: AbortSignal.timeout(input.timeoutMs),
+          });
+          return { status: response.status, url: response.url, text: await response.text() };
+        }, { path, body, timeoutMs: REQUEST_TIMEOUT_MS });
+        if (result.status < 200 || result.status >= 300) throw new SenateEfdHttpError(result.status, path);
+        if (result.url !== `${EFD_ORIGIN}${path}`) {
+          throw new Error(`Senate eFD ${path} redirected away from the requested resource`);
+        }
+        return result.text;
+      } catch (error) {
+        const terminal = error instanceof SenateEfdHttpError &&
+          error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429;
+        if (terminal || this.closed || attempt >= SENATE_REQUEST_RETRIES) throw error;
+        await new Promise<void>((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
+      }
+    }
+  }
+
+  /** All PTRs submitted on or after submittedStartDate (MM/DD/YYYY). */
   async searchPeriodicTransactionReports(submittedStartDate: string): Promise<SenateSearchRow[]> {
     const rows: SenateSearchRow[] = [];
-    const length = 100;
-    for (let start = 0; ; start += length) {
-      const form = new URLSearchParams({
-        start: String(start), length: String(length), report_types: `[${SENATE_PTR_REPORT_TYPE}]`, filer_types: "[]",
-        submitted_start_date: `${submittedStartDate} 00:00:00`, submitted_end_date: "", candidate_state: "",
-        senator_state: "", office_id: "", first_name: "", last_name: "",
-        csrfmiddlewaretoken: this.cookies.get("csrftoken") ?? "",
-      });
-      const response = await fetchWithRetry(`${EFD_ORIGIN}${REPORT_DATA_PATH}`, {
-        method: "POST", body: form,
-        headers: { ...this.headers(SEARCH_PATH), Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
-      });
-      this.storeCookies(response);
-      const payload: unknown = await response.json();
-      if (!payload || typeof payload !== "object" || !("data" in payload) || !Array.isArray(payload.data)) {
-        throw new Error("Senate eFD search response did not include a data array");
-      }
-      const page = payload.data.map((row: unknown): SenateSearchRow => {
+    for (let start = 0; ; start += SENATE_PAGE_SIZE) {
+      const page = await this.searchPeriodicTransactionReportPage({ start, length: SENATE_PAGE_SIZE, submittedStartDate });
+      rows.push(...page.rows);
+      if (page.rows.length < SENATE_PAGE_SIZE) return rows;
+    }
+  }
+
+  /** One page of PTRs submitted on or after submittedStartDate (MM/DD/YYYY). */
+  async searchPeriodicTransactionReportPage(options: {
+    start: number;
+    length: number;
+    submittedStartDate: string;
+  }): Promise<SenateSearchPage> {
+    const form = new URLSearchParams({
+      start: String(options.start),
+      length: String(options.length),
+      report_types: `[${SENATE_PTR_REPORT_TYPE}]`,
+      filer_types: "[]",
+      submitted_start_date: `${options.submittedStartDate} 00:00:00`,
+      submitted_end_date: "",
+      candidate_state: "",
+      senator_state: "",
+      office_id: "",
+      first_name: "",
+      last_name: "",
+    });
+    const payload: unknown = JSON.parse(await this.request(REPORT_DATA_PATH, form.toString()));
+    if (!payload || typeof payload !== "object" || !("data" in payload) || !Array.isArray(payload.data)) {
+      throw new Error("Senate eFD search response did not include a data array");
+    }
+    return {
+      rows: payload.data.map((row: unknown): SenateSearchRow => {
         if (!Array.isArray(row) || row.length < 5 || !row.every((cell) => typeof cell === "string")) {
           throw new Error("Senate eFD search row is not five strings");
         }
         const [firstName = "", lastName = "", filerName = "", linkHtml = "", submittedDate = ""] = row;
         return {
-          firstName: firstName.trim(), lastName: lastName.trim(), filerName: filerName.trim(),
-          reportPath: reportPathFromLink(linkHtml), reportTitle: load(linkHtml)("a").text().trim(),
+          firstName: firstName.trim(),
+          lastName: lastName.trim(),
+          filerName: filerName.trim(),
+          reportPath: reportPathFromLink(linkHtml),
+          reportTitle: load(linkHtml)("a").text().trim(),
           submittedDate: submittedDate.trim(),
         };
-      });
-      rows.push(...page);
-      if (page.length < length) return rows;
-    }
+      }),
+    };
   }
 
   async fetchReportHtml(reportPath: string): Promise<string> {
-    const response = await fetchWithRetry(`${EFD_ORIGIN}${reportPath}`, { headers: this.headers(SEARCH_PATH) });
-    this.storeCookies(response);
-    return response.text();
+    return this.request(validatedReportPath(reportPath));
   }
 }
 
