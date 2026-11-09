@@ -10,9 +10,10 @@ const close = jest.fn();
 const evaluate = jest.fn();
 const goto = jest.fn();
 const navigation = jest.fn();
-const pageUrl = jest.fn();
+const waitForSearch = jest.fn();
 const page = {
-  goto, evaluate, waitForNavigation: navigation, url: pageUrl,
+  goto, evaluate, waitForNavigation: navigation, waitForFunction: waitForSearch,
+  $eval: jest.fn(),
   click: jest.fn(), setDefaultTimeout: jest.fn(), setDefaultNavigationTimeout: jest.fn(),
 };
 
@@ -34,7 +35,7 @@ describe("senateEfdClient", () => {
     evaluate.mockReset().mockResolvedValue(true);
     goto.mockReset().mockResolvedValue({ ok: () => true });
     navigation.mockReset().mockResolvedValue({ ok: () => true });
-    pageUrl.mockReset().mockReturnValue(`${origin}/search/`);
+    waitForSearch.mockReset().mockResolvedValue({ dispose: async () => {} });
     close.mockReset().mockResolvedValue(undefined);
     (puppeteer.launch as jest.Mock).mockReset().mockResolvedValue({ newPage: async () => page, close });
   });
@@ -63,7 +64,10 @@ describe("senateEfdClient", () => {
   });
 
   it("keeps search and concurrent report reads in the browser, and closes once", async () => {
+    navigation.mockResolvedValueOnce({ ok: () => false, status: () => 302 });
     const session = await openSession();
+    expect(page.$eval).toHaveBeenCalledWith("#agree_statement", expect.any(Function));
+    expect(waitForSearch).toHaveBeenCalledWith(expect.any(Function), {}, `${origin}/search/`);
     evaluate.mockResolvedValueOnce(response("/search/report/data/", JSON.stringify({ data: [[
       " First ", " Last ", " Name ", `<a href="${reportPath}">Periodic Transaction Report</a>`, "10/23/2026",
     ]] })));
@@ -122,7 +126,7 @@ describe("senateEfdClient", () => {
   });
 
   it("closes failed initialization and does not mistake HTTP 200 for acceptance", async () => {
-    pageUrl.mockReturnValue(`${origin}/search/home/`);
+    waitForSearch.mockRejectedValue(new Error("search page did not load"));
     await expect(openSession()).rejects.toThrow("did not reach the report search page");
     expect(close).toHaveBeenCalledTimes(1);
   });

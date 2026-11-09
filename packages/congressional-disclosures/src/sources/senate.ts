@@ -13,6 +13,7 @@ const SEARCH_PATH = "/search/";
 const REPORT_DATA_PATH = "/search/report/data/";
 const REQUEST_TIMEOUT_MS = 60_000;
 const SENSOR_SETTLE_MS = 5_000;
+const AGREEMENT_CHECKBOX = "#agree_statement";
 const SENATE_REQUEST_RETRIES = 4;
 const SENATE_PAGE_SIZE = 100;
 const SENATE_MEDIA_ORIGINS = new Set([
@@ -223,13 +224,23 @@ export class SenateEfdSession {
     // networkidle2 alone resolves before the sensor finishes. Submitting then
     // returns a blank 200 challenge instead of recording the agreement.
     await new Promise<void>((resolve) => setTimeout(resolve, SENSOR_SETTLE_MS));
+    // The agreement checkbox can sit below Firefox's viewport. Scroll it into
+    // view before clicking and wait for the final redirect to reach the search page.
+    await this.page.$eval(AGREEMENT_CHECKBOX, (checkbox) => checkbox.scrollIntoView({ block: "center" }));
     const [agreement] = await Promise.all([
       this.page.waitForNavigation({ waitUntil: "networkidle2" }),
-      this.page.click("#agree_statement"),
+      this.page.click(AGREEMENT_CHECKBOX),
     ]);
-    if (agreement && !agreement.ok()) throw new SenateEfdHttpError(agreement.status(), HOME_PATH);
-    if (this.page.url() !== `${EFD_ORIGIN}${SEARCH_PATH}`) {
-      throw new Error("Senate eFD agreement did not reach the report search page");
+    if (agreement && !agreement.ok() && agreement.status() !== 302) {
+      throw new SenateEfdHttpError(agreement.status(), HOME_PATH);
+    }
+    try {
+      const reachedSearch = await this.page.waitForFunction(
+        (url) => location.href === url, {}, `${EFD_ORIGIN}${SEARCH_PATH}`,
+      );
+      await reachedSearch.dispose();
+    } catch (cause) {
+      throw new Error("Senate eFD agreement did not reach the report search page", { cause });
     }
     const hasCsrf = await this.page.evaluate(() =>
       document.cookie.split("; ").some((cookie) => cookie.startsWith("csrftoken=")),
